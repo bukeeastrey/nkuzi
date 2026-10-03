@@ -13,3 +13,6 @@ backend/model_cache/
 
 # Secrets / local settings
 .env
+
+# Private project brief (kept on this laptop only)
+CLAUDE.md

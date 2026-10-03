@@ -2,11 +2,6 @@
 
 Nkuzi (Igbo for "teaching") is a study-group co-pilot for students who teach each other from slides. It listens while you explain, ticks off the points you cover, checks what you said against your slides, and writes a recap for the group chat. Everything runs on your own laptop with no internet.
 
-<!-- FRIEND STORY: Bukee fills this in -->
-
-<!-- SCREENSHOT: the Session screen as a side panel next to a Google Meet call -->
-<!-- GIF: points ticking off while explaining, then "Check me" catching a mistake -->
-
 ## What it does
 
 1. **Upload your slides** (PDF, PowerPoint or Word). Nkuzi builds an outline of the points to cover. You can edit it.
