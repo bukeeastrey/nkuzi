@@ -1,5 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import { getOutline, getSession, saveOutline, sendAudio, startSession, togglePoint } from "../api.js";
+import {
+  dismissIssue,
+  getCheck,
+  getOutline,
+  getSession,
+  saveOutline,
+  sendAudio,
+  startCheck,
+  startSession,
+  togglePoint,
+} from "../api.js";
 import { startMic } from "../audio.js";
 import { CHUNK_SECONDS } from "../config.js";
 
@@ -179,6 +189,50 @@ function MissedPanel({ points, covered, unit, onClose }) {
   );
 }
 
+// "Check me" results. Corrections only ever appear here, after the explainer asks.
+// Each one shows what Nkuzi heard next to the slide's own words, so a
+// mishearing is easy to spot and dismiss.
+function CorrectionsPanel({ issues, status, message, unit, onDismiss, onClose }) {
+  const visible = issues.filter((issue) => !issue.dismissed);
+  return (
+    <div className="corrections" role="region" aria-label="Corrections">
+      <div className="corrections-head">
+        <strong>Check me</strong>
+        <button type="button" className="link" onClick={onClose}>Close</button>
+      </div>
+
+      {status === "running" && (
+        <p className="corrections-status">
+          <span className="spinner" aria-hidden="true" /> Checking what you said against your slides… This takes a
+          minute or two on this laptop. Keep explaining: your ticks catch up when it finishes.
+        </p>
+      )}
+      {status === "error" && <p className="error" role="alert">{message}</p>}
+      {status === "done" && message && <p className="corrections-status">{message}</p>}
+
+      {visible.map((issue) => (
+        <div key={issue.id} className="correction">
+          <div className="correction-row">
+            <span className="correction-label">Nkuzi heard</span>
+            <span>“{issue.heard}”</span>
+          </div>
+          <div className="correction-row">
+            <span className="correction-label">{unit} {issue.slide} says</span>
+            <span>“{issue.slide_quote}”</span>
+          </div>
+          {issue.fix && <p className="correction-fix">{issue.fix}</p>}
+          <button type="button" className="button small" onClick={() => onDismiss(issue.id)}>
+            That's not what I said
+          </button>
+        </div>
+      ))}
+      {status !== "running" && visible.length === 0 && !message && (
+        <p className="corrections-status">No corrections so far.</p>
+      )}
+    </div>
+  );
+}
+
 // Seconds -> "4:07"
 function clock(seconds) {
   const whole = Math.floor(seconds);
@@ -235,6 +289,11 @@ export default function Session({ sessionId, onBack }) {
   const [covered, setCovered] = useState(() => new Set()); // ids of ticked points
   const [fresh, setFresh] = useState(() => new Set()); // ids ticked in the last few seconds (highlighted)
   const [showMissed, setShowMissed] = useState(false);
+  const [issues, setIssues] = useState([]); // corrections found by "Check me"
+  const [checkJob, setCheckJob] = useState(null); // id of the check in progress
+  const [checkStatus, setCheckStatus] = useState("idle"); // idle | running | done | error
+  const [checkMessage, setCheckMessage] = useState("");
+  const [showCheck, setShowCheck] = useState(false);
 
   // Things the audio callbacks need, kept in refs so they are always current.
   const stopMicRef = useRef(null); // function that turns the mic off
@@ -266,6 +325,7 @@ export default function Session({ sessionId, onBack }) {
         applyServerOutline(data.outline);
         // Coming back to a session that was already started (e.g. after a reload).
         setTranscript(data.transcript);
+        setIssues(data.issues);
         setCovered(new Set(Object.keys(data.covered).filter((id) => data.covered[id].covered)));
         setElapsed(data.audio_seconds || 0);
         nextSeqRef.current = data.transcript.reduce((max, line) => Math.max(max, line.seq + 1), 0);
@@ -344,6 +404,58 @@ export default function Session({ sessionId, onBack }) {
     try {
       const result = await togglePoint(sessionId, pointId);
       setCovered(new Set(result.covered));
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
+  // ----- "Check me" (Gemma; slow, so it runs in the background) -----
+
+  async function handleCheck() {
+    setShowCheck(true);
+    setShowMissed(false);
+    if (checkStatus === "running") return; // one at a time
+    setCheckStatus("running");
+    setCheckMessage("");
+    try {
+      const { job_id } = await startCheck(sessionId);
+      setCheckJob(job_id);
+    } catch (e) {
+      setCheckStatus("error");
+      setCheckMessage(e.message);
+    }
+  }
+
+  // While a check runs, ask for its result every 2 seconds.
+  useEffect(() => {
+    if (checkStatus !== "running" || !checkJob) return;
+    let cancelled = false;
+    const timer = setInterval(async () => {
+      try {
+        const job = await getCheck(sessionId, checkJob);
+        if (cancelled || job.status === "running") return;
+        setCheckStatus(job.status);
+        setCheckMessage(job.message);
+        setCheckJob(null);
+        if (job.issues.length > 0) setIssues((old) => [...job.issues, ...old]); // newest first
+      } catch (e) {
+        if (cancelled) return;
+        setCheckStatus("error");
+        setCheckMessage(e.message);
+        setCheckJob(null);
+      }
+    }, 2000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [checkStatus, checkJob, sessionId]);
+
+  // "That's not what I said": hide it, and keep it out of the recap.
+  async function handleDismiss(issueId) {
+    try {
+      await dismissIssue(sessionId, issueId);
+      setIssues((old) => old.map((issue) => (issue.id === issueId ? { ...issue, dismissed: true } : issue)));
     } catch (e) {
       setError(e.message);
     }
@@ -437,6 +549,7 @@ export default function Session({ sessionId, onBack }) {
   const percent = progress.total ? Math.round((progress.done / progress.total) * 100) : 0;
   const started = live || transcript.length > 0;
   const coveredCount = points.filter((p) => covered.has(p.id)).length;
+  const openIssues = issues.filter((issue) => !issue.dismissed).length;
   const coveredPercent = points.length ? Math.round((coveredCount / points.length) * 100) : 0;
 
   let micTitle = "Start listening";
@@ -478,8 +591,20 @@ export default function Session({ sessionId, onBack }) {
         </div>
         {live && (
           <div className="listen-actions">
-            <button type="button" className="button small" onClick={() => setShowMissed(!showMissed)} aria-expanded={showMissed}>
+            <button
+              type="button"
+              className="button small"
+              onClick={() => {
+                setShowMissed(!showMissed);
+                setShowCheck(false);
+              }}
+              aria-expanded={showMissed}
+            >
               What did I miss?
+            </button>
+            <button type="button" className="button small" onClick={handleCheck} aria-expanded={showCheck}>
+              {checkStatus === "running" ? "Checking…" : "Check me"}
+              {openIssues > 0 && checkStatus !== "running" && <span className="badge">{openIssues}</span>}
             </button>
             <button type="button" className="button small" onClick={backToOutline}>
               Edit outline
@@ -495,6 +620,16 @@ export default function Session({ sessionId, onBack }) {
 
       {live && showMissed && (
         <MissedPanel points={points} covered={covered} unit={unit} onClose={() => setShowMissed(false)} />
+      )}
+      {live && showCheck && (
+        <CorrectionsPanel
+          issues={issues}
+          status={checkStatus}
+          message={checkMessage}
+          unit={unit}
+          onDismiss={handleDismiss}
+          onClose={() => setShowCheck(false)}
+        />
       )}
 
       {session.warning && <p className="banner warn">{session.warning}</p>}

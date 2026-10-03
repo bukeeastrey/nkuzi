@@ -123,6 +123,8 @@ async def _generate(prompt: str, system: str, max_tokens: int, schema: dict | No
             "num_predict": max_tokens,
         },
     }
+    if config.OLLAMA_NUM_THREAD:
+        body["options"]["num_thread"] = config.OLLAMA_NUM_THREAD
     started = time.perf_counter()
     try:
         async with httpx.AsyncClient(timeout=config.OLLAMA_TIMEOUT_S) as client:

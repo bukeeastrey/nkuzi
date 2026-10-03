@@ -21,3 +21,34 @@ Shorten each one to at most 15 words, using only words from that line."""
 OUTLINE_NOTES = """
 Speaker notes (extra context only):
 {notes}"""
+
+
+# ---------- "Check me" ----------
+
+CHECK_SYSTEM = (
+    "You check a student's spoken explanation against their lecture slides. "
+    "Report only clear factual contradictions between what the student said and what the slides say. "
+    "Do not report omissions, opinions, style, or anything the slides don't mention. "
+    "If nothing contradicts the slides, return an empty list."
+)
+
+# Step 1: find candidate contradictions in the last stretch of speech.
+CHECK_PROMPT = """Slides:
+{slides}
+
+The student said:
+"{said}"
+
+List each thing the student said that clearly contradicts a slide. For each one give:
+said: the student's words, copied
+slide: the slide number
+slide_quote: the exact slide line it contradicts, copied
+fix: the correct fact, in one short sentence
+If nothing contradicts the slides, return an empty list."""
+
+# Step 2: a yes/no second opinion on each candidate (small models do this well).
+CONFIRM_PROMPT = """Slide "{title}" says: "{quote}"
+
+The student said: "{said}"
+
+Does the student's statement contradict the slide? Saying the same thing in other words is not a contradiction."""

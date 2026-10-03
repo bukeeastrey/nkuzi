@@ -5,7 +5,10 @@ Use it to test live transcription without a browser. From the backend folder:
 
     python scripts\\send_wav.py                       (uses the sample deck + samples\\sample.wav)
     python scripts\\send_wav.py my_slides.pptx my_talk.wav
+    python scripts\\send_wav.py samples\\beta_blockers.pptx samples\\sample_mistakes.wav --check
 
+--check presses "Check me" at the end and prints the corrections
+(sample_mistakes.wav contains two deliberate mistakes).
 The .wav must be 16 kHz, mono, 16-bit.
 """
 import sys
@@ -39,9 +42,32 @@ def loaded_models() -> str:
         return "Ollama not running"
 
 
+def check_me(client: httpx.Client, session_id: str):
+    """Press "Check me" and wait for the result."""
+    started = time.perf_counter()
+    reply = client.post(f"{API}/sessions/{session_id}/check")
+    if reply.status_code != 200:
+        print("\nCheck me:", reply.json().get("detail"))
+        return
+    job_id = reply.json()["job_id"]
+    while True:
+        job = client.get(f"{API}/sessions/{session_id}/check/{job_id}").json()
+        if job["status"] != "running":
+            break
+        time.sleep(2)
+    summary = job["message"] or f"{len(job['issues'])} correction(s)"
+    print(f"\nCheck me ({job['status']}, {time.perf_counter() - started:.0f} s): {summary}")
+    for issue in job["issues"]:
+        print(f"    heard:   {issue['heard']!r}")
+        print(f"    slide {issue['slide']}: {issue['slide_quote']!r}")
+        print(f"    fix:     {issue['fix']}")
+
+
 def main():
-    deck = Path(sys.argv[1]) if len(sys.argv) > 1 else BACKEND_DIR / "samples" / "beta_blockers.pptx"
-    wav = Path(sys.argv[2]) if len(sys.argv) > 2 else BACKEND_DIR / "samples" / "sample.wav"
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    run_check = "--check" in sys.argv
+    deck = Path(args[0]) if len(args) > 0 else BACKEND_DIR / "samples" / "beta_blockers.pptx"
+    wav = Path(args[1]) if len(args) > 1 else BACKEND_DIR / "samples" / "sample.wav"
     pcm = read_wav(wav)
     client = httpx.Client(timeout=300)
 
@@ -81,6 +107,8 @@ def main():
         print("WARNING: at least one chunk took longer than it lasts. Live transcription would fall behind.")
     if "covered_count" in result:
         print(f"Covered {result['covered_count']} of {result['total']} points.")
+    if run_check:
+        check_me(client, session_id)
     print(f"Open it in the browser: http://localhost:5173/#/session/{session_id}")
 
 

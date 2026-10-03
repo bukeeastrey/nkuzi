@@ -12,7 +12,7 @@ from pathlib import Path
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import config, coverage, llm, outline, pdf, slides as slide_files, store, transcribe
+from . import check, config, coverage, llm, outline, pdf, slides as slide_files, store, transcribe
 from .models import Health, OutlineUpdate
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
@@ -228,6 +228,7 @@ async def post_audio(session_id: str, request: Request, seq: int = 0, mic: str =
         _save_debug_chunk(session_id, seq, mic, pcm)
     audio_seconds = len(pcm) / 2 / transcribe.SAMPLE_RATE
 
+    await check.wait_until_idle()  # a running "Check me" gets the CPU to itself
     async with _audio_lock:
         if not session["started_at"]:
             session["started_at"] = datetime.now().isoformat(timespec="seconds")
@@ -289,3 +290,33 @@ async def get_missed(session_id: str):
     """"What did I miss?": the points not covered yet. Instant, no AI."""
     session = _get_session(session_id)
     return {"points": coverage.missed_points(session), **_coverage_response(session)}
+
+
+# ---------- "Check me" (the slow path: Gemma, only on request) ----------
+
+@app.post("/api/sessions/{session_id}/check")
+async def start_check(session_id: str):
+    """Starts a check in the background. Poll GET .../check/{job_id} for the result."""
+    session = _get_session(session_id)
+    ready = await llm.is_ready()
+    if not ready["model_present"]:
+        raise HTTPException(503, f"Check me needs Gemma. {ready['message']}")
+    return {"job_id": check.start_job(session)}
+
+
+@app.get("/api/sessions/{session_id}/check/{job_id}")
+async def get_check(session_id: str, job_id: str):
+    job = check.get_job(session_id, job_id)
+    if job is None:
+        raise HTTPException(404, "That check isn't running any more. Press Check me again.")
+    return job
+
+
+@app.post("/api/sessions/{session_id}/issues/{issue_id}/dismiss")
+async def dismiss_issue(session_id: str, issue_id: str):
+    """"That's not what I said": the issue is hidden and left out of the recap."""
+    session = _get_session(session_id)
+    if not check.dismiss(session, issue_id):
+        raise HTTPException(404, "That correction doesn't exist any more.")
+    store.save(session)
+    return {"issues": session["issues"]}

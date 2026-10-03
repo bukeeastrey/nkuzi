@@ -73,3 +73,19 @@ export function sendAudio(sessionId, seq, chunk, micLabel = "") {
 export function togglePoint(sessionId, pointId) {
   return request(`/sessions/${sessionId}/points/${pointId}/toggle`, { method: "POST" });
 }
+
+// "Check me": starts a background check of the recent speech against the slides.
+// Returns {job_id}; ask getCheck() until its status is no longer "running".
+export function startCheck(sessionId) {
+  return request(`/sessions/${sessionId}/check`, { method: "POST" });
+}
+
+// Returns {status: "running" | "done" | "error", issues, message}.
+export function getCheck(sessionId, jobId) {
+  return request(`/sessions/${sessionId}/check/${jobId}`);
+}
+
+// "That's not what I said": hide a correction and keep it out of the recap.
+export function dismissIssue(sessionId, issueId) {
+  return request(`/sessions/${sessionId}/issues/${issueId}/dismiss`, { method: "POST" });
+}

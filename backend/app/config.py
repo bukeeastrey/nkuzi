@@ -34,6 +34,8 @@ OLLAMA_MODEL = _env("OLLAMA_MODEL", "gemma4:e2b-it-qat")
 OLLAMA_NUM_CTX = _env("OLLAMA_NUM_CTX", 4096)  # never above 8192 on this laptop
 OLLAMA_KEEP_ALIVE = _env("OLLAMA_KEEP_ALIVE", "10m")
 OLLAMA_TIMEOUT_S = _env("OLLAMA_TIMEOUT_S", 300)  # CPU is slow; be generous
+# CPU threads Gemma may use. 0 = let Ollama decide (it takes every core).
+OLLAMA_NUM_THREAD = _env("OLLAMA_NUM_THREAD", 0)
 
 # --- Speech to text (faster-whisper, CPU only) ---
 WHISPER_MODEL = _env("WHISPER_MODEL", "tiny.en")  # or "base.en"
@@ -67,7 +69,11 @@ OUTLINE_DEDUPE_SIM = _env("OUTLINE_DEDUPE_SIM", 0.9)  # above this, two points a
 MAX_UPLOAD_MB = _env("MAX_UPLOAD_MB", 50)
 LARGE_DECK_SLIDES = _env("LARGE_DECK_SLIDES", 60)  # warn above this many slides
 
-CHECK_WINDOW_SECONDS = _env("CHECK_WINDOW_SECONDS", 90)
+# --- "Check me" (Gemma, slow path) ---
+# While a check runs, hold new audio chunks (they queue in the browser) and
+# transcribe them when it finishes. Running both at once is slower for both.
+CHECK_PAUSES_TRANSCRIPTION = _env("CHECK_PAUSES_TRANSCRIPTION", True)
+CHECK_HOLD_SECONDS = _env("CHECK_HOLD_SECONDS", 120)  # never hold a chunk longer than this
 
 # --- Folders ---
 DATA_DIR = _env("DATA_DIR", BACKEND_DIR / "data" / "sessions")
