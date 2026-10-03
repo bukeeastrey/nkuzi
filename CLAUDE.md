@@ -126,6 +126,7 @@ nkuzi/
 ├── CLAUDE.md
 ├── README.md                 # setup + usage + "why open source" (draft for the DEV post)
 ├── LICENSE                   # MIT
+├── run-lan.ps1               # LAN mode: prints the https:// address, starts backend + page for a friend's device
 ├── .gitignore                # venv, node_modules, backend/data/, model caches, .env
 ├── backend/
 │   ├── requirements.txt
@@ -155,7 +156,7 @@ nkuzi/
 │   └── data/sessions/        # runtime, gitignored
 └── frontend/
     ├── package.json
-    ├── vite.config.js        # proxy /api → http://localhost:8000
+    ├── vite.config.js        # proxy /api → http://localhost:8000; LAN mode (NKUZI_LAN=1): --host, HTTPS, port 5174
     ├── index.html
     ├── public/
     │   └── pcm-worklet.js    # AudioWorklet processor
@@ -197,6 +198,7 @@ python-docx
 
 ### Frontend
 - React 18 + Vite. **Plain CSS** (no Tailwind, no UI library) to keep setup tiny.
+- `@vitejs/plugin-basic-ssl` (dev dependency, approved): HTTPS for LAN mode only.
 - No other npm dependencies unless the user agrees.
 
 ### External
@@ -435,6 +437,16 @@ The open session's id is in the address bar (`#/session/<id>`), so a reload or a
 
 ---
 
+### 8.4 LAN mode (a friend's laptop or phone on the same Wi-Fi / hotspot)
+- `.\run-lan.ps1` (repo root) sets `NKUZI_LAN=1` and runs Vite, which then listens on every network address, serves **HTTPS** with a self-made certificate (`@vitejs/plugin-basic-ssl`), and uses **port 5174** so the normal `npm run dev` (5173) can stay running. Browsers only allow the microphone on https:// or localhost.
+- The script starts the backend if it isn't running, prints `https://<this laptop's address>:5174`, and explains the certificate warning (Advanced → Proceed).
+- **The backend stays on localhost.** Visitors reach it only through Vite's `/api` proxy, so no CORS change and nothing but port 5174 is exposed.
+- **Windows Firewall:** on this laptop Node.js already has an inbound "allow" rule for *Private* networks, and the home Wi-Fi is Private, so no rule was needed. On a network Windows marks *Public* (common for phone hotspots) add one, as administrator: `New-NetFirewallRule -DisplayName 'Nkuzi LAN' -Direction Inbound -Protocol TCP -LocalPort 5174 -Action Allow`. The script prints this when it sees a Public network.
+- Tested from this laptop only (HTTPS page and `/api/health` on the LAN address both answer). Not yet tested from a second device.
+- One explainer at a time: the backend transcribes one chunk at a time for the whole app.
+
+---
+
 ## 9. Testing & verification
 
 - `backend/scripts/check_setup.py`: checks Ollama is reachable, model pulled, loads Whisper + embedder, runs a tiny Gemma JSON prompt, transcribes `samples/sample.wav`, and **prints timings** for each. Run this first on the real laptop.
@@ -521,4 +533,7 @@ python scripts\check_setup.py
 # every time (two terminals)
 cd backend; .\run.ps1             # http://localhost:8000
 cd frontend; npm install; npm run dev   # http://localhost:5173
+
+# or, to let a friend's device use it over the same Wi-Fi / hotspot
+.\run-lan.ps1                     # prints https://<address>:5174
 ```

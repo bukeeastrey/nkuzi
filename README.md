@@ -75,6 +75,24 @@ $env:OLLAMA_MODEL = "gemma3:1b"; .\run.ps1
 
 Every setting in `backend/app/config.py` can be overridden the same way, with an environment variable of the same name.
 
+## LAN mode: letting a friend use it over Wi-Fi
+
+A friend on the same Wi-Fi or hotspot can use Nkuzi from their own laptop or phone. The AI still runs on your laptop; their device only shows the page and sends its microphone audio to you.
+
+```powershell
+.\run-lan.ps1
+```
+
+It starts the backend if needed, prints the address to open (for example `https://192.168.1.20:5174`), and starts the page over HTTPS. HTTPS is needed because browsers only allow the microphone on secure pages.
+
+- **The browser will warn that the connection isn't private.** That is expected: the certificate is made by your laptop. Choose Advanced, then Proceed.
+- **Windows Firewall.** If the friend's device can't open the page, run this once in PowerShell opened as administrator:
+  ```powershell
+  New-NetFirewallRule -DisplayName 'Nkuzi LAN' -Direction Inbound -Protocol TCP -LocalPort 5174 -Action Allow
+  ```
+  This is usually needed when Windows has marked the network as "Public", which is common for phone hotspots.
+- Only one person should be explaining at a time: the laptop transcribes one audio stream at a time.
+
 ## Try it without a microphone
 
 With the backend running:
