@@ -1,0 +1,131 @@
+/* Colours are CSS variables so light and dark mode share every rule below. */
+:root {
+  --bg: #f7f6f2;
+  --surface: #ffffff;
+  --text: #1c211f;
+  --muted: #5d6763;
+  --border: #dcdfd9;
+  --accent: #1f7a5c; /* covered / OK */
+  --accent-soft: #e3f1ec;
+  --amber: #a26c0d; /* corrections / needs attention */
+  --amber-soft: #fbf1dc;
+  --missed: #a8483f; /* only used in the recap */
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121614;
+    --surface: #1b211e;
+    --text: #e9ede9;
+    --muted: #9aa5a0;
+    --border: #2d3531;
+    --accent: #4fb892;
+    --accent-soft: #1a332a;
+    --amber: #e0a63a;
+    --amber-soft: #33290f;
+    --missed: #e08379;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.app {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.main {
+  flex: 1;
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 48px 16px 24px;
+}
+
+.footer {
+  padding: 16px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.app-name {
+  margin: 0;
+  font-size: 44px;
+  letter-spacing: -0.02em;
+  color: var(--accent);
+}
+
+.tagline {
+  margin: 4px 0 32px;
+  font-size: 18px;
+  color: var(--muted);
+}
+
+.muted {
+  color: var(--muted);
+}
+
+/* --- Health strip --- */
+.health {
+  list-style: none;
+  margin: 0 0 24px;
+  padding: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.health-item {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 14px 16px;
+}
+
+.health-item + .health-item {
+  border-top: 1px solid var(--border);
+}
+
+.health-icon {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  font-size: 14px;
+}
+
+.health-item.ok .health-icon {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.health-item.bad .health-icon {
+  background: var(--amber-soft);
+  color: var(--amber);
+}
+
+.health-label {
+  font-weight: 600;
+}
+
+.health-message {
+  color: var(--muted);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}

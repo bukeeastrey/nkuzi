@@ -1,0 +1,15 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+frontend/dist/
+
+# Runtime data and downloaded models
+backend/data/
+backend/model_cache/
+
+# Secrets / local settings
+.env

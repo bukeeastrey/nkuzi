@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic>=2
+httpx
+pymupdf
+faster-whisper
+fastembed
+numpy
+rapidfuzz
