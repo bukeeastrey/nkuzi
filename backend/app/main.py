@@ -176,6 +176,7 @@ async def put_outline(session_id: str, update: OutlineUpdate):
     # The explainer's version wins: stop Gemma if it is still working.
     outline.cancel(session_id)
     session["outline"].update(status="ready", source="edited", message="", points=points)
+    coverage.forget_removed_points(session)
     store.save(session)
     await asyncio.to_thread(coverage.cache_point_embeddings, session)
     return _outline_response(session)
@@ -220,16 +221,50 @@ async def post_audio(session_id: str, request: Request, seq: int = 0):
 
         at = session.get("audio_seconds", 0.0)  # where this chunk starts in the session
         session["audio_seconds"] = round(at + audio_seconds, 2)
+        newly_covered = []
+        started = time.perf_counter()
         if text:
             transcript.append({"seq": seq, "at": round(at, 1), "text": text})
+            # Tick off any outline points this speech covered (embeddings only, no Gemma).
+            newly_covered = await asyncio.to_thread(coverage.update, session)
+        coverage_seconds = time.perf_counter() - started
         store.save(session)
 
-    # Per-chunk timing: Whisper must stay faster than the chunk is long.
-    log.info("chunk %d: %.1f s of audio -> Whisper %.1f s | %r", seq, audio_seconds, whisper_seconds, text[:80])
+    # Per-chunk timing: Whisper + coverage must stay faster than the chunk is long.
+    log.info(
+        "chunk %d: %.1f s of audio -> Whisper %.1f s, coverage %.2f s, %d new ticks | %r",
+        seq, audio_seconds, whisper_seconds, coverage_seconds, len(newly_covered), text[:80],
+    )
     return {
         "seq": seq,
         "text": text,
         "at": round(at, 1),
         "whisper_seconds": round(whisper_seconds, 2),
+        "coverage_seconds": round(coverage_seconds, 2),
         "audio_seconds": session["audio_seconds"],
+        "newly_covered": newly_covered,
+        **_coverage_response(session),
     }
+
+
+def _coverage_response(session: dict) -> dict:
+    covered = coverage.covered_ids(session)
+    return {"covered": covered, "covered_count": len(covered), "total": len(session["outline"]["points"])}
+
+
+@app.post("/api/sessions/{session_id}/points/{point_id}/toggle")
+async def toggle_point(session_id: str, point_id: str):
+    """Manual tick / untick. The explainer's click always wins over the automatic matching."""
+    session = _get_session(session_id)
+    if point_id not in {p["id"] for p in session["outline"]["points"]}:
+        raise HTTPException(404, "That point isn't on the outline any more.")
+    coverage.toggle(session, point_id)
+    store.save(session)
+    return _coverage_response(session)
+
+
+@app.get("/api/sessions/{session_id}/missed")
+async def get_missed(session_id: str):
+    """"What did I miss?": the points not covered yet. Instant, no AI."""
+    session = _get_session(session_id)
+    return {"points": coverage.missed_points(session), **_coverage_response(session)}

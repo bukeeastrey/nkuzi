@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { getOutline, getSession, saveOutline, sendAudio, startSession } from "../api.js";
+import { getOutline, getSession, saveOutline, sendAudio, startSession, togglePoint } from "../api.js";
 import { startMic } from "../audio.js";
 import { CHUNK_SECONDS } from "../config.js";
 
 const TRANSCRIPT_LINES = 6; // how many recent lines the transcript panel shows
+const FRESH_MS = 3000; // how long a newly ticked point stays highlighted
 
 // React needs a stable "key" for each row. Saved points use their id;
 // points added in the browser get a temporary key until they are saved.
@@ -113,7 +114,8 @@ function EditableOutline({ points, unit, locked, onEdit }) {
 }
 
 // The outline while you are explaining: a big checklist, grouped by slide.
-function Checklist({ points, slides, unit }) {
+// covered: Set of ticked point ids. fresh: Set of ids ticked in the last few seconds.
+function Checklist({ points, slides, unit, covered, fresh, onToggle }) {
   // Keep the outline's order; start a new group whenever the slide number changes.
   const groups = [];
   for (const point of points) {
@@ -132,15 +134,47 @@ function Checklist({ points, slides, unit }) {
             {titles[group.slide] && <span className="check-heading-title"> · {titles[group.slide]}</span>}
           </h2>
           <ul>
-            {group.points.map((point) => (
-              <li key={point.key} className="check-item">
-                <span className="check-box" aria-hidden="true" />
-                <span>{point.text}</span>
-              </li>
-            ))}
+            {group.points.map((point) => {
+              const done = covered.has(point.id);
+              const classes = ["check-item", done && "done", fresh.has(point.id) && "fresh"].filter(Boolean).join(" ");
+              return (
+                <li key={point.key}>
+                  {/* Click to tick or untick by hand. Your click always wins over the automatic matching. */}
+                  <button type="button" className={classes} aria-pressed={done} onClick={() => onToggle(point.id)}>
+                    <span className="check-box" aria-hidden="true">{done ? "✓" : ""}</span>
+                    <span>{point.text}</span>
+                  </button>
+                </li>
+              );
+            })}
           </ul>
         </section>
       ))}
+    </div>
+  );
+}
+
+// "What did I miss?": the points not ticked yet.
+function MissedPanel({ points, covered, unit, onClose }) {
+  const missed = points.filter((p) => !covered.has(p.id));
+  return (
+    <div className="missed" role="region" aria-label="Points not covered yet">
+      <div className="missed-head">
+        <strong>{missed.length === 0 ? "Nothing missed" : `Not covered yet (${missed.length})`}</strong>
+        <button type="button" className="link" onClick={onClose}>Close</button>
+      </div>
+      {missed.length === 0 ? (
+        <p className="missed-empty">You have covered every point on your outline.</p>
+      ) : (
+        <ul>
+          {missed.map((point) => (
+            <li key={point.key}>
+              {point.text}
+              {point.slide && <span className="missed-slide"> {unit.toLowerCase()} {point.slide}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
@@ -198,6 +232,9 @@ export default function Session({ sessionId, onBack }) {
   const [transcript, setTranscript] = useState([]); // [{seq, at, text}]
   const [waiting, setWaiting] = useState(0); // chunks recorded but not yet transcribed
   const [elapsed, setElapsed] = useState(0); // seconds of listening so far
+  const [covered, setCovered] = useState(() => new Set()); // ids of ticked points
+  const [fresh, setFresh] = useState(() => new Set()); // ids ticked in the last few seconds (highlighted)
+  const [showMissed, setShowMissed] = useState(false);
 
   // Things the audio callbacks need, kept in refs so they are always current.
   const stopMicRef = useRef(null); // function that turns the mic off
@@ -228,6 +265,7 @@ export default function Session({ sessionId, onBack }) {
         applyServerOutline(data.outline);
         // Coming back to a session that was already started (e.g. after a reload).
         setTranscript(data.transcript);
+        setCovered(new Set(Object.keys(data.covered).filter((id) => data.covered[id].covered)));
         setElapsed(data.audio_seconds || 0);
         nextSeqRef.current = data.transcript.reduce((max, line) => Math.max(max, line.seq + 1), 0);
         if (data.started_at) setLive(true);
@@ -289,6 +327,27 @@ export default function Session({ sessionId, onBack }) {
     }
   }
 
+  // ----- ticks -----
+
+  // Highlight newly ticked points for a moment, so the eye catches them.
+  function highlight(ids) {
+    if (ids.length === 0) return;
+    setFresh((old) => new Set([...old, ...ids]));
+    setTimeout(() => {
+      setFresh((old) => new Set([...old].filter((id) => !ids.includes(id))));
+    }, FRESH_MS);
+  }
+
+  // Manual tick / untick.
+  async function handleToggle(pointId) {
+    try {
+      const result = await togglePoint(sessionId, pointId);
+      setCovered(new Set(result.covered));
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
   // ----- audio: mic -> queue -> backend, one chunk at a time -----
 
   function stopMic() {
@@ -310,6 +369,8 @@ export default function Session({ sessionId, onBack }) {
         if (result.text) {
           setTranscript((lines) => [...lines, { seq: result.seq, at: result.at, text: result.text }]);
         }
+        setCovered(new Set(result.covered));
+        highlight(result.newly_covered);
       }
     } catch (e) {
       queueRef.current = [];
@@ -372,6 +433,8 @@ export default function Session({ sessionId, onBack }) {
   const unit = session.unit || "Slide";
   const percent = progress.total ? Math.round((progress.done / progress.total) * 100) : 0;
   const started = live || transcript.length > 0;
+  const coveredCount = points.filter((p) => covered.has(p.id)).length;
+  const coveredPercent = points.length ? Math.round((coveredCount / points.length) * 100) : 0;
 
   let micTitle = "Start listening";
   if (micOn) micTitle = "Listening";
@@ -381,7 +444,7 @@ export default function Session({ sessionId, onBack }) {
   let micNote = "Keep this beside your call. Nkuzi hears only your mic.";
   if (micOn || live) {
     const lag = waiting > 2 ? `falling behind (${waiting} chunks waiting)` : waiting > 0 ? "transcribing…" : "";
-    micNote = [clock(elapsed), `${points.length} points`, lag].filter(Boolean).join(" · ");
+    micNote = [clock(elapsed), `${coveredCount} / ${points.length} points covered`, lag].filter(Boolean).join(" · ");
   }
 
   return (
@@ -411,11 +474,25 @@ export default function Session({ sessionId, onBack }) {
           )}
         </div>
         {live && (
-          <button type="button" className="button small" onClick={backToOutline}>
-            Edit outline
-          </button>
+          <div className="listen-actions">
+            <button type="button" className="button small" onClick={() => setShowMissed(!showMissed)} aria-expanded={showMissed}>
+              What did I miss?
+            </button>
+            <button type="button" className="button small" onClick={backToOutline}>
+              Edit outline
+            </button>
+          </div>
+        )}
+        {live && (
+          <div className="progress listen-progress" role="progressbar" aria-label="Points covered" aria-valuenow={coveredPercent} aria-valuemin={0} aria-valuemax={100}>
+            <div className="progress-fill" style={{ width: `${coveredPercent}%` }} />
+          </div>
         )}
       </div>
+
+      {live && showMissed && (
+        <MissedPanel points={points} covered={covered} unit={unit} onClose={() => setShowMissed(false)} />
+      )}
 
       {session.warning && <p className="banner warn">{session.warning}</p>}
 
@@ -450,7 +527,7 @@ export default function Session({ sessionId, onBack }) {
       {live ? (
         <>
           <Transcript lines={transcript} micOn={micOn} />
-          <Checklist points={points} slides={session.slides} unit={unit} />
+          <Checklist points={points} slides={session.slides} unit={unit} covered={covered} fresh={fresh} onToggle={handleToggle} />
         </>
       ) : (
         <>

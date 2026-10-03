@@ -59,11 +59,16 @@ export function startSession(sessionId) {
 }
 
 // Send one chunk of microphone audio (Int16Array, 16 kHz mono).
-// Returns {seq, text, at, whisper_seconds}.
+// Returns {seq, text, at, whisper_seconds, newly_covered, covered, covered_count, total}.
 export function sendAudio(sessionId, seq, chunk) {
   return request(`/sessions/${sessionId}/audio?seq=${seq}`, {
     method: "POST",
     headers: { "Content-Type": "application/octet-stream" },
     body: chunk,
   });
+}
+
+// Tick or untick a point by hand. Returns {covered: [ids], covered_count, total}.
+export function togglePoint(sessionId, pointId) {
+  return request(`/sessions/${sessionId}/points/${pointId}/toggle`, { method: "POST" });
 }

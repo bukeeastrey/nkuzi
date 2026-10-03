@@ -83,7 +83,7 @@ Implications:
 - Gemma answers can be slow. Keep prompts short and outputs short and in JSON (use a JSON schema as Ollama's `format` to force the shape).
 - **Gemma 4 is a "thinking" model.** Always send `"think": false` (done in `llm.py`); otherwise the small token budget is spent on thinking and the answer comes back empty.
 - Ollama defaults to a small context window. Set `num_ctx` explicitly (default 4096; never above 8192 on this machine).
-- Whisper: default `tiny.en` (fast), allow `base.en` via config (more accurate, slower). int8, CPU, `cpu_threads=4`.
+- Whisper: default `tiny.en` (fast), allow `base.en` via config (more accurate, slower). int8, CPU, `cpu_threads=4`. **Measured: 1.2–2.4 s per 8 s chunk with `gemma4:e2b-it-qat` loaded (idle) in Ollama**, so live transcription keeps up. Not yet measured while Gemma is *generating* (that happens in M4 "Check me").
 - Embeddings: `BAAI/bge-small-en-v1.5` via fastembed (small, ONNX, fast on CPU).
 - RAM budget: Gemma + Whisper tiny + bge-small must fit together **alongside a browser running the call**. Load Whisper and the embedder once at startup; let Ollama manage Gemma with `keep_alive` (config, default `"10m"`).
 - Whisper and embedding models are cached in `backend/model_cache/` (gitignored) and loaded with `local_files_only=True` first, so startup never touches the network once they are downloaded.
@@ -149,7 +149,7 @@ nkuzi/
 │   │   ├── check_setup.py    # verifies Ollama running, model pulled, whisper + embedder load, prints timings
 │   │   ├── make_samples.py   # writes samples/beta_blockers.pdf, .pptx and .docx
 │   │   ├── compare_models.py # outline speed, RAM, verification pass rate and a contradiction test per model
-│   │   └── transcribe_file.py# transcribe a .wav for quick testing
+│   │   └── send_wav.py       # plays a .wav through the running backend as if it were the mic
 │   ├── samples/              # sample deck (.pdf, .pptx, .docx) + sample wav for testing (small)
 │   ├── model_cache/          # downloaded Whisper + embedding models, gitignored
 │   └── data/sessions/        # runtime, gitignored
@@ -220,9 +220,10 @@ WHISPER_MODEL = "tiny.en"       # or "base.en"
 WHISPER_THREADS = 4
 EMBED_MODEL = "BAAI/bge-small-en-v1.5"
 CHUNK_SECONDS = 8               # must match frontend
-COVER_THRESHOLD = 0.62          # cosine sim to mark a point covered (tune in M3)
-COVER_KEYWORD_BONUS = 0.08      # added when key terms of a point appear in transcript
-MAX_OUTLINE_POINTS = 25
+COVER_THRESHOLD = 0.80          # similarity + bonus needed to tick a point (see §7.7)
+COVER_KEYWORD_BONUS = 0.06      # added when most key terms of a point were said
+COVER_KEYWORD_SHARE = 0.75      # "most" = this share of the point's key terms
+MAX_OUTLINE_POINTS = 40
 CHECK_WINDOW_SECONDS = 90       # how much recent speech "Check me" looks at
 OUTLINE_SLIDE_WORDS = 400       # longer slides are cut to this in the prompt
 OUTLINE_NOTES_WORDS = 120       # speaker notes are cut to this in the prompt
@@ -254,33 +255,51 @@ MODEL_CACHE_DIR = backend/model_cache
 **Old `.ppt` / `.doc`** (detected by extension or OLE header): error "Please open this in PowerPoint/Word and Save As .pptx/.docx."
 Anything else: "Nkuzi reads .pdf, .pptx and .docx files. Export your slides to one of those and try again."
 
-**Vocabulary string for Whisper** (`pdf.build_vocab`, used for every file type): the most distinctive terms across slides **and speaker notes** (capitalized words, long words ≥ 8 letters, words with digits/units, acronyms, deduplicated, most frequent first), capped at ~700 characters so it fits Whisper's prompt.
+**Vocabulary string for Whisper** (`pdf.build_vocab`, used for every file type): the most distinctive terms across slides **and speaker notes** (capitalized words, long words ≥ 8 letters, words with digits/units, acronyms, deduplicated, most frequent first), capped at ~400 characters. Whisper's prompt holds ~224 tokens and medical words use several tokens each; a longer list pushes the most frequent terms out.
 
 ### 7.3 `llm.py`
 - `async def generate_json(prompt: str, system: str, max_tokens: int, schema: dict | None = None) -> dict`
 - Calls `POST {OLLAMA_URL}/api/generate` with `format: schema or "json"`, `stream: false`, `think: false`, `options: {temperature: 0.2, num_ctx, num_predict: max_tokens}`, `keep_alive`.
 - Parse JSON; on parse failure retry once with "Return valid JSON only." appended; then raise a clean `LLMError`.
+- **Every failure has a real reason.** `LLMError` carries a message the UI shows as-is and a `reason` code: `not_running`, `model_missing`, `out_of_memory`, `timeout`, `busy`, `invalid_json`, `other` (Ollama's own error text is parsed for these). Never show a bare "hit a problem".
+- **If Ollama is busy** (503, or it dropped the connection while loading/unloading a model), wait 8 s and retry once.
 - `async def is_ready() -> {ok, model_present, message}` using `/api/tags`.
 - Log timing of every call (so we can report speed honestly in the post).
 
 ### 7.4 `outline.py`: building the outline (slow path, runs before the session)
-- **One slide per Gemma call** (short prompts suit small models and keep every call inside `num_ctx`). Slides with almost no body text (< 12 words, e.g. a title slide) are not sent to Gemma; they keep a single title point.
+**Which slides get points** (`content_slides`, same for the fallback and Gemma outlines):
+- Skip **structural slides**, matched on the title: Outline, Introduction, Objectives, Learning objectives, Overview, Contents, Questions, Thank you. Skip **title-only slides**. From a **References / Bibliography** slide onwards, skip everything (references run to the end of the deck).
+- The **title slide** (first slide, short title, under 12 words of body) is never a point. Its title becomes the **session topic** when the user leaves the topic blank (then the file name).
+- A slide whose "title" is really a sentence (8+ words) counts that sentence as a line of content.
+
+**How many points per slide** (`plan_budget`):
+- `MAX_OUTLINE_POINTS` (40) is shared across **all** content slides: `min(3, 40 // slides)` each, at least 1. Big decks get about 1 per slide, small decks up to 3. Spare points go to the slides with the most text. The end of the deck (treatment, management) is never cut off.
+- **List slides** (lines average 5 words or fewer, e.g. Investigations: CXR, Spirometry, ABG) become **one summary point built in code**: `"Title: item, item, item …"` (max ~140 characters). No Gemma call.
+
+**Gemma** (one slide per call, only where there is a choice to make or a long line to shorten):
 - Prompt (in `prompts.py`), deliberately tiny:
   - System: "You turn lecture slides into a short checklist of the key points a student must explain. Use only information in the slides."
   - User: slide title + slide text (+ "Speaker notes (extra context only)" when the slide has notes), then "Choose the N most important lines of this slide. Shorten each one to at most 15 words, using only words from that line."
-  - Output is forced with a **JSON schema**: `{"points": ["...", "..."]}` with exactly N strings (N = up to `OUTLINE_POINTS_PER_SLIDE`).
+  - Output is forced with a **JSON schema**: `{"points": ["...", "..."]}` with exactly N strings (N = that slide's budget).
 - **Verification guardrail (keep it whatever the model).** Small models glue two bullets into a false statement ("Bradycardia is contraindicated in asthma"). So each Gemma point is checked in code (`_ground`):
   1. every content word of the point must come from **one single line** of the slide (title words are allowed too), and
-  2. the point must keep every key term (drug names, acronyms, long words) of that line.
+  2. if that line is short (15 words or fewer), the point must keep every key term (drug names, acronyms, long words) of the line. A long line has to lose words to be shortened, so there rule 1 is enough.
   If it passes, Gemma's wording is used. If not, **the slide's own line is used instead**. Points that match no line, or the same line twice, are dropped.
 - **Speaker notes** are extra context in the prompt. Points must still come from the slide's lines, except when the slide is nearly empty (picture + notes): then the notes' sentences are the lines.
-- `outline["stats"]` records per outline: `slides_asked, reworded, copied, fell_back, dropped, seconds` (honest numbers for the write-up).
+- `outline["stats"]` records per outline: `slides_asked, failed, reworded, copied, fell_back, dropped, seconds`.
 - Keywords for each point are computed in code from the point's text (not by Gemma).
-- Dedupe near-duplicates using embeddings (sim > 0.9). Cap at `MAX_OUTLINE_POINTS`, spread fairly across slides, keeping slide order.
-- **Deterministic fallback** (shown instantly while Gemma runs, and used if Ollama is down or a slide's call fails): slide title + up to 2 top bullet lines per slide. The app must work without Gemma.
-- Runs as a **background task**; progress (`done / total` slides) is polled by the UI.
+- Dedupe near-duplicates using embeddings (sim > 0.9).
+
+**Failures**
+- A slide that fails keeps its own lines; the run continues. It stops early after 3 failures in a row, or at once for `not_running`, `model_missing`, `out_of_memory`.
+- The reason is logged and stored in `outline["message"]`, which the UI shows: "Built from your slides without Gemma. Reason: …" or "Gemma couldn't finish 3 of 16 slides: …".
+
+**Other**
+- **Deterministic fallback** (shown instantly while Gemma runs, and used if Ollama is down): the first lines of each content slide, using the same budget. The app must work without Gemma.
+- Runs as a **background task**; progress (`done / total` Gemma calls) is polled by the UI.
 - Saving an edited outline (PUT) **cancels** a running Gemma job: the explainer's version wins.
 - After the outline is final, precompute and cache the embedding of each point (point text + keywords).
+- Measured on the 35-slide COAD lecture with `gemma4:e2b-it-qat`: 27 content slides, 38 points, 16 Gemma calls, 274 s (about 16 s per call).
 
 ### 7.5 `check.py`: "Check me" (on request only) — the anti-hallucination rules
 1. Take transcript text from the last `CHECK_WINDOW_SECONDS`.
@@ -298,20 +317,25 @@ Anything else: "Nkuzi reads .pdf, .pptx and .docx files. Export your slides to o
 - Load `WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8", cpu_threads=WHISPER_THREADS)` **once at startup**.
 - `transcribe_chunk(pcm_int16: bytes, vocab: str, prev_text: str) -> str`
   - Convert Int16 PCM → float32 numpy in [-1, 1] at 16 kHz.
-  - `model.transcribe(audio, language="en", beam_size=1, vad_filter=True, initial_prompt=(vocab + " " + prev_text[-200:]), condition_on_previous_text=False)`
+  - `model.transcribe(audio, language="en", beam_size=1, temperature=0.0, vad_filter=True, initial_prompt=(vocab + " " + prev_text[-200:]), condition_on_previous_text=False)`
+  - **`temperature=0.0` is required**: by default Whisper retries an unclear chunk up to five more times, which made some 8 s chunks take 8–13 s here. Single pass keeps every chunk at 1–2.5 s.
+  - Segments with `no_speech_prob >= 0.6` are dropped.
   - The `initial_prompt` with slide vocabulary is **important**: it makes Whisper spell medical terms correctly. Keep it.
-- Each chunk must finish transcribing faster than `CHUNK_SECONDS`. Measure in M2; if too slow, keep `tiny.en` and/or raise `CHUNK_SECONDS` to 10.
-- Process chunks **sequentially per session** (a simple asyncio lock / queue) so the CPU isn't thrashed. Run blocking Whisper calls in a thread (`run_in_threadpool` / `asyncio.to_thread`).
+- Each chunk must finish transcribing faster than `CHUNK_SECONDS`. `POST /audio` logs the time for every chunk. If it ever falls behind, the UI shows "falling behind (N chunks waiting)".
+- Known limits of `tiny.en`: a word cut by a chunk boundary can be lost, and unusual terms are sometimes misspelled ("braticardia"). `WHISPER_MODEL=base.en` is the lever if accuracy matters more than speed.
+- Process chunks **one at a time for the whole app** (one asyncio lock in `main.py`) so the CPU isn't thrashed. Run blocking Whisper calls in a thread (`run_in_threadpool` / `asyncio.to_thread`).
 
 ### 7.7 `coverage.py`: ticking off points (fast path, no LLM)
-- Maintain per-session: transcript segments with timestamps, set of covered point ids, `covered_at` time and the matching snippet for each.
-- After each new chunk:
+- `session["covered"]` holds one entry per point that was ticked or touched: `{point_id: {covered, manual, at, snippet, score}}`. A point with no entry is still open.
+- After each new chunk of speech (`coverage.update`):
   - Text window = last 2 chunks joined (catches points that span a chunk boundary).
-  - Split into sentences (simple regex). Embed sentences + the whole window.
-  - For each **uncovered** point: score = max cosine sim between point embedding and any sentence/window embedding; add `COVER_KEYWORD_BONUS` if ≥ 1 of the point's keywords appears in the window (case-insensitive, fuzzy ≥ 85 for long terms).
-  - If score ≥ `COVER_THRESHOLD`, mark covered, store the snippet.
-- Return newly covered point ids so the UI can animate them.
-- Also support **manual tick/untick** from the UI (the explainer can correct it). Manual always wins.
+  - Split into sentences (simple regex). Embed the sentences + the whole window. Only the new text is embedded, never the whole transcript.
+  - For each **open** point: score = max cosine similarity between the point's embedding and any sentence/window; add `COVER_KEYWORD_BONUS` if at least `COVER_KEYWORD_SHARE` (75%) of the point's keywords were said (case-insensitive; terms of 6+ letters match fuzzily at ≥ 80, because Whisper misspells them).
+  - If score ≥ `COVER_THRESHOLD`, mark covered and store the snippet.
+- **Threshold.** bge-small similarities sit high: unrelated chatter scores up to 0.68, same-topic-but-not-said up to 0.80, covered points 0.83–1.0 (measured on the sample recording). So the threshold is **0.80**, not 0.62. Tuned on one synthetic recording only: re-tune with real explanations. Every chunk logs the three best scores (`coverage (threshold 0.80): TICK 0.93 (+kw) '…' | 0.77 '…'`).
+- Returns newly covered point ids so the UI can highlight them.
+- **Manual tick/untick** (`coverage.toggle`): the explainer's click always wins. A manually touched point is never changed by the automatic matching again.
+- Editing the outline drops ticks of deleted points (`forget_removed_points`).
 
 ### 7.8 `recap.py`
 - Build deterministically (no LLM needed, so it's instant):
@@ -324,7 +348,7 @@ Anything else: "Nkuzi reads .pdf, .pptx and .docx files. Export your slides to o
 - Save full transcript too (downloadable as .txt).
 
 ### 7.9 `store.py`
-- One JSON file per session: `data/sessions/<session_id>.json` holding title, explainer, created_at, unit, slides, vocab, outline (+ status, source, progress, stats), transcript segments, covered map, issues, started_at, ended_at.
+- One JSON file per session: `data/sessions/<session_id>.json` holding title, explainer, created_at, unit, slides, vocab, outline (+ status, source, progress, stats), transcript segments (`{seq, at, text}`), `audio_seconds` (how much has been listened to), covered map, issues, started_at, ended_at.
 - Embeddings stay in memory only (recompute on load if needed).
 - Write after every state change (small files, fine). Written to a temp file first, then renamed.
 
@@ -338,9 +362,9 @@ Anything else: "Nkuzi reads .pdf, .pptx and .docx files. Export your slides to o
 | GET | `/sessions/{id}/outline` | `{status: generating\|ready\|fallback_only, source: slides\|gemma\|edited, progress, message, points}` |
 | PUT | `/sessions/{id}/outline` | save user-edited outline (re-embed points); cancels a running Gemma outline |
 | POST | `/sessions/{id}/start` | mark live start time |
-| POST | `/sessions/{id}/audio` | body: raw Int16 PCM (`application/octet-stream`), query `seq` → `{text, newly_covered: [ids], covered_count, total}` |
-| POST | `/sessions/{id}/points/{pid}/toggle` | manual tick/untick |
-| GET | `/sessions/{id}/missed` | uncovered points (instant) |
+| POST | `/sessions/{id}/audio` | body: raw Int16 PCM (`application/octet-stream`), query `seq` → `{seq, text, at, whisper_seconds, coverage_seconds, audio_seconds, newly_covered: [ids], covered: [ids], covered_count, total}` |
+| POST | `/sessions/{id}/points/{pid}/toggle` | manual tick/untick → `{covered: [ids], covered_count, total}` |
+| GET | `/sessions/{id}/missed` | `{points: [...], covered, covered_count, total}` (instant) |
 | POST | `/sessions/{id}/check` | starts "Check me" job → `{job_id}` |
 | GET | `/sessions/{id}/check/{job_id}` | `{status, issues, message}` |
 | POST | `/sessions/{id}/end` | finalize → recap object incl. `whatsapp_text` |
@@ -378,8 +402,9 @@ The open session's id is in the address bar (`#/session/<id>`), so a reload or a
    - A sticky **mic bar** at the top: a big round **"Start listening"** button, a status line, and the progress count.
    - **Before listening**: the outline is editable. The fallback outline shows immediately with a progress bar while Gemma builds the real one ("Gemma is reading your slides… 3/7"), then Gemma's outline swaps in (note: "Generated by Gemma, running on this laptop. Every point is checked against your slides."). Each point: editable text, slide number chip, up/down, delete; "Add point"; "Save changes".
    - **"Start listening"** saves the outline as it is (stopping Gemma if still running) and switches the same screen to the **checklist**: large points (≥ 18px) grouped by slide. "Edit outline" switches back.
-   - **While listening** (M2/M3 fill these in): points animate to ✓ when covered (gentle highlight, no jarring motion); click a point to toggle manually; "7 / 18 points covered"; level meter + elapsed timer; collapsible live transcript (last ~6 lines, auto-scroll).
-   - **"What did I miss?"** button → panel listing uncovered points (instant).
+   - **While listening**: the mic button pauses/resumes; level meter + elapsed timer; "7 / 18 points covered" with a thin progress bar; collapsible "What Nkuzi heard" transcript (last 6 lines). Points turn green with a ✓ when covered, with a gentle ring for 3 s; click a point to tick/untick by hand. If transcription lags, the mic bar says "falling behind (N chunks waiting)".
+   - Reopening a started session (reload, or its `#/session/<id>` link) goes straight to the checklist with its transcript and ticks.
+   - **"What did I miss?"** button (in the mic bar) → panel listing uncovered points with slide numbers (instant, computed in the browser).
    - **"Check me"** button → non-blocking "Checking against your slides…" → results panel. Each issue shows: what you said, slide N quote, fix. Empty result shows a reassuring message.
    - Corrections never pop up uninvited; they appear only after "Check me".
    - "End session" button → Recap.
@@ -402,7 +427,8 @@ The open session's id is in the address bar (`#/session/<id>`), so a reload or a
 ## 9. Testing & verification
 
 - `backend/scripts/check_setup.py`: checks Ollama is reachable, model pulled, loads Whisper + embedder, runs a tiny Gemma JSON prompt, transcribes `samples/sample.wav`, and **prints timings** for each. Run this first on the real laptop.
-- `backend/scripts/make_samples.py` writes the same "Beta blockers" deck to `backend/samples/` as `.pdf`, `.pptx` (with a table slide, speaker notes and a notes-only slide) and `.docx` (headings, long paragraphs, a table). A short wav of someone explaining it is still needed (the user can record one).
+- `backend/scripts/make_samples.py` writes the same "Beta blockers" deck to `backend/samples/` as `.pdf`, `.pptx` (with a table slide, speaker notes and a notes-only slide) and `.docx` (headings, long paragraphs, a table). `samples/sample.wav` is a 47 s text-to-speech recording explaining the deck (8 of 18 points); a real voice recording would be a better test.
+- `backend/scripts/send_wav.py [deck] [wav]` plays a .wav through the running backend chunk by chunk and prints what was heard, Whisper's time per chunk, which points ticked, and which models Ollama has loaded. This tests everything except the browser's microphone capture.
 - `backend/scripts/compare_models.py <model> <model>` measures each model on the sample `.pptx`: load time, seconds per slide, peak RAM, verification stats, and a 4-case contradiction test. **Stop the backend first.** Results are saved to `backend/data/model_comparison.json`.
 - Unit-ish tests (plain `pytest`, optional): quote verification in `check.py` rejects fabricated quotes; coverage marks a point covered for a paraphrase and not for an unrelated sentence.
 - Manual end-to-end test script in README: upload a sample deck → review outline → Start listening → speak 3 points → see ticks → "What did I miss?" → deliberately say something wrong (e.g. wrong drug class) → "Check me" catches it with the slide quote → End → copy WhatsApp recap.
@@ -419,11 +445,11 @@ Scaffold folders, `requirements.txt`, venv instructions, `config.py`, `llm.py`, 
 `slides.py` / `pdf.py` / `office.py`, fallback outline, verified Gemma outline in background with progress, `/sessions` create, outline GET/PUT, Setup + Session screens (Session has the outline editor and a placeholder checklist behind "Start listening").
 ✅ Done when: user uploads a real lecture file (.pdf, .pptx or .docx) and gets an editable outline from Gemma.
 
-**M2 — Live transcription (≈1.5 h)**
+**M2 — Live transcription (DONE)**
 AudioWorklet capture wired to the "Start listening" button, 16 kHz Int16 chunks, `/audio`, `transcribe.py` with vocab prompt, live transcript on the Session screen. Print per-chunk timing.
 ✅ Done when: user speaks and sees accurate text within ~10 s, including medical terms from the slides.
 
-**M3 — Coverage ticking (≈1.5 h)**
+**M3 — Coverage ticking (DONE, threshold needs tuning with real speech)**
 `coverage.py`, newly-covered animation, manual toggle, progress, "What did I miss?". Tune `COVER_THRESHOLD` with the user by speaking real explanations (log scores per point to the console to tune).
 ✅ Done when: explaining points ticks them off reliably with few false ticks.
 → **This is the minimum demoable product. Commit and tag it.**

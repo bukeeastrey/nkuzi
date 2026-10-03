@@ -42,8 +42,12 @@ EMBED_MODEL = _env("EMBED_MODEL", "BAAI/bge-small-en-v1.5")
 
 # --- Live session tuning ---
 CHUNK_SECONDS = _env("CHUNK_SECONDS", 8)  # must match frontend/src/config.js
-COVER_THRESHOLD = _env("COVER_THRESHOLD", 0.62)
-COVER_KEYWORD_BONUS = _env("COVER_KEYWORD_BONUS", 0.08)
+# A point is ticked when (similarity to what was said + keyword bonus) reaches the
+# threshold. Measured with bge-small on this laptop: unrelated chatter scores up
+# to 0.68, same-topic-but-not-said up to 0.80, really covered points 0.83-1.0.
+COVER_THRESHOLD = _env("COVER_THRESHOLD", 0.80)
+COVER_KEYWORD_BONUS = _env("COVER_KEYWORD_BONUS", 0.06)  # added when most key terms were said
+COVER_KEYWORD_SHARE = _env("COVER_KEYWORD_SHARE", 0.75)  # "most" = this share of the point's key terms
 MAX_OUTLINE_POINTS = _env("MAX_OUTLINE_POINTS", 40)
 CHECK_WINDOW_SECONDS = _env("CHECK_WINDOW_SECONDS", 90)
 
