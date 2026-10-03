@@ -16,3 +16,8 @@ Slide text:
 
 Choose the {count} most important lines of this slide.
 Shorten each one to at most 15 words, using only words from that line."""
+
+# Added under the slide text when the slide has speaker notes (.pptx only).
+OUTLINE_NOTES = """
+Speaker notes (extra context only):
+{notes}"""

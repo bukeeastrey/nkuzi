@@ -1,32 +1,84 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { getHealth } from "./api.js";
 import Setup from "./screens/Setup.jsx";
-import OutlineReview from "./screens/OutlineReview.jsx";
+import Session from "./screens/Session.jsx";
 
-// A tiny state machine instead of a router. Screens so far: "setup", "outline".
-// Later milestones add "live" and "recap".
+// The open session's id lives in the address bar ("#/session/abc123"), so
+// reloading the page (or resizing it into a side panel) keeps you in place.
+function sessionIdFromHash() {
+  const match = window.location.hash.match(/^#\/session\/([a-f0-9]+)$/);
+  return match ? match[1] : null;
+}
+
+// Shows nothing when all is well. When something is broken, says what and how to fix it.
+function ProblemBanner() {
+  const [problems, setProblems] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function check() {
+      let found;
+      try {
+        found = (await getHealth()).problems;
+      } catch (e) {
+        found = [{ title: "Nkuzi's backend isn't running.", fix: "In the backend folder, run: .\\run.ps1" }];
+      }
+      if (!cancelled) setProblems(found);
+    }
+
+    check();
+    // Keep checking, so the banner goes away by itself once things are fixed.
+    const timer = setInterval(check, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
+
+  if (problems.length === 0) return null;
+  return (
+    <div className="problems" role="alert">
+      {problems.map((problem) => (
+        <div key={problem.title} className="problem">
+          <strong>{problem.title}</strong> {problem.fix}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// Two screens, no router needed: "setup" (home) and "session"
+// (outline + listening on one screen). The recap arrives in a later milestone.
 export default function App() {
-  const [screen, setScreen] = useState("setup");
-  const [session, setSession] = useState(null); // what POST /sessions returned
+  const [sessionId, setSessionId] = useState(sessionIdFromHash);
 
-  function openOutline(newSession) {
-    setSession(newSession);
-    setScreen("outline");
+  // Back/forward buttons change the hash; follow them.
+  useEffect(() => {
+    const onHashChange = () => setSessionId(sessionIdFromHash());
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, []);
+
+  function openSession(id) {
+    window.location.hash = `#/session/${id}`;
   }
 
   function goHome() {
-    setSession(null);
-    setScreen("setup");
+    window.location.hash = "";
   }
 
   return (
     <div className="app">
+      <ProblemBanner />
       <main className="main">
-        {screen === "setup" && <Setup onCreated={openOutline} />}
-        {screen === "outline" && <OutlineReview session={session} onBack={goHome} />}
+        {sessionId ? (
+          <Session key={sessionId} sessionId={sessionId} onBack={goHome} />
+        ) : (
+          <Setup onCreated={openSession} />
+        )}
       </main>
-      <footer className="footer">
-        Runs 100% on this device · Gemma + Whisper · no internet needed
-      </footer>
+      <footer className="footer">Running offline · Gemma</footer>
     </div>
   );
 }

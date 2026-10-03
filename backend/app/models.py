@@ -13,16 +13,17 @@ class OutlineUpdate(BaseModel):
     points: list[PointIn]
 
 
+class Problem(BaseModel):
+    """Something that is broken, and how to fix it. Shown as a banner."""
+    title: str
+    fix: str
+
+
 class Health(BaseModel):
     app_name: str
     model_name: str
-    # Ollama + Gemma
     ollama_ok: bool
     model_present: bool
-    ollama_message: str
-    # Speech model (faster-whisper)
     whisper_loaded: bool
-    whisper_message: str
-    # Embedding model (fastembed)
     embedder_loaded: bool
-    embedder_message: str
+    problems: list[Problem]

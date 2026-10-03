@@ -10,7 +10,7 @@ NO_TEXT_MESSAGE = (
 )
 
 
-class PdfError(Exception):
+class SlidesError(Exception):
     """Raised with a friendly message the UI can show as-is."""
 
 
@@ -97,24 +97,25 @@ def _build_slide(number: int, lines: list[dict]) -> dict:
             body.append(line["text"])
         previous = line
 
-    return {"index": number, "title": title, "text": "\n".join([title] + body)}
+    # PDFs carry no speaker notes; .pptx files do (see office.py).
+    return {"index": number, "title": title, "text": "\n".join([title] + body), "notes": ""}
 
 
 def extract_slides(pdf_bytes: bytes) -> list[dict]:
-    """PDF bytes -> [{index (1-based page number), title, text}], skipping empty slides."""
+    """PDF bytes -> [{index (1-based page number), title, text, notes}], skipping empty slides."""
     try:
         doc = pymupdf.open(stream=pdf_bytes, filetype="pdf")
     except Exception:
-        raise PdfError("That file couldn't be opened as a PDF. Export your slides to PDF and try again.")
+        raise SlidesError("That file couldn't be opened as a PDF. Export your slides to PDF and try again.")
     if doc.needs_pass:
-        raise PdfError("This PDF is password-protected. Remove the password and try again.")
+        raise SlidesError("This PDF is password-protected. Remove the password and try again.")
 
     pages = [(page.number + 1, _read_lines(page)) for page in doc]
     doc.close()
 
     with_text = sum(1 for _, lines in pages if lines)
     if with_text == 0:
-        raise PdfError(NO_TEXT_MESSAGE)
+        raise SlidesError(NO_TEXT_MESSAGE)
 
     # Footers / headers: the same line on more than half of the slides.
     repeated = set()
@@ -130,7 +131,7 @@ def extract_slides(pdf_bytes: bytes) -> list[dict]:
         if lines:  # image-only slides are skipped
             slides.append(_build_slide(number, lines))
     if not slides:
-        raise PdfError(NO_TEXT_MESSAGE)
+        raise SlidesError(NO_TEXT_MESSAGE)
     return slides
 
 
@@ -148,16 +149,19 @@ def is_distinctive(word: str, first_in_line: bool = False) -> bool:
     return word[0].isupper() and len(word) >= 4 and not first_in_line
 
 
-def build_vocab(slides: list[dict], max_chars: int = 700) -> str:
+def build_vocab(slides: list[dict], max_chars: int = 400) -> str:
     """The deck's distinctive terms, most frequent first, as one comma-separated string.
 
     This is given to Whisper as a hint so it spells medical terms correctly.
-    Whisper's prompt is short (~224 tokens), so we cap the length.
+    Whisper's prompt is short (~224 tokens, and medical words use several
+    tokens each), so we cap the length. Anything beyond the limit would push
+    the most frequent terms out of the prompt.
     """
     counts = Counter()
     spelling = {}  # lower-case term -> the spelling first seen on the slides
     for slide in slides:
-        for line in slide["text"].split("\n"):
+        # Speaker notes count too: the explainer is likely to say those words.
+        for line in (slide["text"] + "\n" + slide.get("notes", "")).split("\n"):
             for i, word in enumerate(WORD_RE.findall(line)):
                 if is_distinctive(word, first_in_line=(i == 0)):
                     key = word.lower()
@@ -171,3 +175,9 @@ def build_vocab(slides: list[dict], max_chars: int = 700) -> str:
             break
         vocab += addition
     return vocab
+
+
+def split_sentences(text: str) -> list[str]:
+    """Split a paragraph into sentences (simple rule: ., ! or ? then a capital)."""
+    parts = re.split(r"(?<=[.!?])\s+(?=[A-Z0-9])", " ".join(text.split()))
+    return [part for part in parts if part]

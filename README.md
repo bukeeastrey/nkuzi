@@ -4,7 +4,7 @@ Nkuzi (Igbo for "teaching") is a study-session co-pilot for students who teach e
 
 <!-- FRIEND STORY: Bukee fills this in -->
 
-> Status: Milestone 0 (setup check). The sections on how it works, measured performance and limitations are written in Milestone 5.
+> Status: Milestone 1 (slides to outline). Upload a .pdf, .pptx or .docx and get an editable outline. The sections on how it works, measured performance and limitations are written in Milestone 5.
 
 ## Setup on Windows
 
@@ -12,7 +12,7 @@ You need Python, Node.js and [Ollama](https://ollama.com/download).
 
 ```powershell
 # one-time
-ollama pull gemma3:1b             # under 1 GB
+ollama pull gemma4:e2b-it-qat     # about 4.3 GB, start it early (needs ~3.6 GB of free RAM)
 cd backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1      # if blocked: Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
@@ -26,7 +26,7 @@ cd frontend; npm install; npm run dev    # http://localhost:5173
 
 After the downloads above, Nkuzi works with Wi-Fi turned off.
 
-Settings (model names, thresholds, chunk size) are in `backend/app/config.py`. Each one can be overridden with an environment variable of the same name, for example `$env:OLLAMA_MODEL = "gemma4:e2b-it-qat"`.
+Settings (model names, thresholds, chunk size) are in `backend/app/config.py`. Each one can be overridden with an environment variable of the same name, for example `$env:OLLAMA_MODEL = "gemma3:1b"` (a much smaller model, for when RAM is tight; its "Check me" results are not reliable).
 
 ## License
 

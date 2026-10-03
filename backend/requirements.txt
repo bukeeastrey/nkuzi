@@ -8,3 +8,5 @@ faster-whisper
 fastembed
 numpy
 rapidfuzz
+python-pptx
+python-docx

@@ -27,12 +27,17 @@ export function getHealth() {
 }
 
 // Upload the slides and create a session.
-export function createSession({ pdf, title, explainer }) {
+export function createSession({ file, title, explainer }) {
   const form = new FormData();
-  form.append("pdf", pdf);
+  form.append("pdf", file); // the field is called "pdf", but .pptx and .docx work too
   form.append("title", title);
   form.append("explainer", explainer);
   return request("/sessions", { method: "POST", body: form });
+}
+
+// Everything about one session: title, slides, outline...
+export function getSession(sessionId) {
+  return request(`/sessions/${sessionId}`);
 }
 
 export function getOutline(sessionId) {
@@ -45,5 +50,20 @@ export function saveOutline(sessionId, points) {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ points }),
+  });
+}
+
+// Mark the moment the explanation starts.
+export function startSession(sessionId) {
+  return request(`/sessions/${sessionId}/start`, { method: "POST" });
+}
+
+// Send one chunk of microphone audio (Int16Array, 16 kHz mono).
+// Returns {seq, text, at, whisper_seconds}.
+export function sendAudio(sessionId, seq, chunk) {
+  return request(`/sessions/${sessionId}/audio?seq=${seq}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/octet-stream" },
+    body: chunk,
   });
 }

@@ -1,6 +1,7 @@
 """Sessions are plain dicts, saved as one JSON file each. No database."""
 import json
 import re
+import time
 import uuid
 from datetime import datetime
 
@@ -15,12 +16,13 @@ def _path(session_id: str):
     return config.DATA_DIR / f"{session_id}.json"
 
 
-def new_session(title: str, explainer: str, slides: list[dict], vocab: str) -> dict:
+def new_session(title: str, explainer: str, slides: list[dict], vocab: str, unit: str) -> dict:
     session = {
         "id": uuid.uuid4().hex[:12],
         "title": title,
         "explainer": explainer,
         "created_at": datetime.now().isoformat(timespec="seconds"),
+        "unit": unit,  # "Slide", or "Section" for Word files
         "slides": slides,
         "vocab": vocab,
         "outline": {
@@ -49,7 +51,15 @@ def save(session: dict):
     # Write to a temp file first, so a power cut can't leave half a file.
     temp = path.with_suffix(".tmp")
     temp.write_text(json.dumps(session, ensure_ascii=False, indent=1), encoding="utf-8")
-    temp.replace(path)
+    for attempt in range(5):
+        try:
+            temp.replace(path)
+            return
+        except PermissionError:
+            # Windows antivirus can briefly lock a file we just wrote. Try again.
+            if attempt == 4:
+                raise
+            time.sleep(0.1)
 
 
 def get(session_id: str) -> dict | None:
