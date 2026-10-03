@@ -16,6 +16,8 @@ def _env(name: str, default):
         return default
     if isinstance(default, Path):
         return Path(raw)
+    if isinstance(default, bool):  # "1", "true", "yes", "on" mean True
+        return raw.strip().lower() in ("1", "true", "yes", "on")
     return type(default)(raw)  # int("4096"), float("0.62"), str(...)
 
 
@@ -36,6 +38,9 @@ OLLAMA_TIMEOUT_S = _env("OLLAMA_TIMEOUT_S", 300)  # CPU is slow; be generous
 # --- Speech to text (faster-whisper, CPU only) ---
 WHISPER_MODEL = _env("WHISPER_MODEL", "tiny.en")  # or "base.en"
 WHISPER_THREADS = _env("WHISPER_THREADS", 4)
+# Debugging aid: keep every microphone chunk as a .wav in DEBUG_AUDIO_DIR, so
+# we can listen to exactly what Whisper was given. Leave it off normally.
+SAVE_AUDIO_CHUNKS = _env("SAVE_AUDIO_CHUNKS", True)
 
 # --- Embeddings (fastembed, ONNX, CPU only) ---
 EMBED_MODEL = _env("EMBED_MODEL", "BAAI/bge-small-en-v1.5")
@@ -68,6 +73,7 @@ CHECK_WINDOW_SECONDS = _env("CHECK_WINDOW_SECONDS", 90)
 DATA_DIR = _env("DATA_DIR", BACKEND_DIR / "data" / "sessions")
 # Downloaded Whisper + embedding models are kept here so they survive reboots
 # and the app works offline after the first run.
+DEBUG_AUDIO_DIR = _env("DEBUG_AUDIO_DIR", BACKEND_DIR / "data" / "debug_audio")
 MODEL_CACHE_DIR = _env("MODEL_CACHE_DIR", BACKEND_DIR / "model_cache")
 
 FRONTEND_ORIGIN = _env("FRONTEND_ORIGIN", "http://localhost:5173")

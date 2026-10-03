@@ -60,8 +60,9 @@ export function startSession(sessionId) {
 
 // Send one chunk of microphone audio (Int16Array, 16 kHz mono).
 // Returns {seq, text, at, whisper_seconds, newly_covered, covered, covered_count, total}.
-export function sendAudio(sessionId, seq, chunk) {
-  return request(`/sessions/${sessionId}/audio?seq=${seq}`, {
+// micLabel: short description of the mic setup (e.g. "16000hz-ns-on"), for the backend log.
+export function sendAudio(sessionId, seq, chunk, micLabel = "") {
+  return request(`/sessions/${sessionId}/audio?seq=${seq}&mic=${encodeURIComponent(micLabel)}`, {
     method: "POST",
     headers: { "Content-Type": "application/octet-stream" },
     body: chunk,

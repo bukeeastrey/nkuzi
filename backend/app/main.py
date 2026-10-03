@@ -3,7 +3,9 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
+import re
 import time
+import wave
 from datetime import datetime
 from pathlib import Path
 
@@ -190,6 +192,18 @@ _audio_lock = asyncio.Lock()
 MAX_CHUNK_BYTES = 2 * 1024 * 1024  # 8 s of audio is 256 KB; anything huge is a mistake
 
 
+def _save_debug_chunk(session_id: str, seq: int, mic: str, pcm: bytes):
+    """SAVE_AUDIO_CHUNKS: keep the chunk as a 16 kHz mono .wav, exactly as Whisper gets it."""
+    label = re.sub(r"[^a-z0-9_-]", "", mic.lower())  # the label comes from the browser: keep it file-safe
+    folder = config.DEBUG_AUDIO_DIR / (f"{session_id}_{label}" if label else session_id)
+    folder.mkdir(parents=True, exist_ok=True)
+    with wave.open(str(folder / f"chunk_{seq:03d}.wav"), "wb") as f:
+        f.setnchannels(1)
+        f.setsampwidth(2)  # 16-bit
+        f.setframerate(transcribe.SAMPLE_RATE)
+        f.writeframes(pcm[: len(pcm) - (len(pcm) % 2)])
+
+
 @app.post("/api/sessions/{session_id}/start")
 async def start_session(session_id: str):
     session = _get_session(session_id)
@@ -200,12 +214,18 @@ async def start_session(session_id: str):
 
 
 @app.post("/api/sessions/{session_id}/audio")
-async def post_audio(session_id: str, request: Request, seq: int = 0):
-    """Body: raw 16 kHz mono Int16 PCM. Returns the text heard in this chunk."""
+async def post_audio(session_id: str, request: Request, seq: int = 0, mic: str = ""):
+    """Body: raw 16 kHz mono Int16 PCM. Returns the text heard in this chunk.
+
+    `mic` is an optional short label from the browser (its sample rate and
+    noise-suppression setting), used only for logging and debug recordings.
+    """
     session = _get_session(session_id)
     pcm = await request.body()
     if len(pcm) > MAX_CHUNK_BYTES:
         raise HTTPException(400, "That audio chunk is too large.")
+    if config.SAVE_AUDIO_CHUNKS:
+        _save_debug_chunk(session_id, seq, mic, pcm)
     audio_seconds = len(pcm) / 2 / transcribe.SAMPLE_RATE
 
     async with _audio_lock:
@@ -232,8 +252,9 @@ async def post_audio(session_id: str, request: Request, seq: int = 0):
 
     # Per-chunk timing: Whisper + coverage must stay faster than the chunk is long.
     log.info(
-        "chunk %d: %.1f s of audio -> Whisper %.1f s, coverage %.2f s, %d new ticks | %r",
-        seq, audio_seconds, whisper_seconds, coverage_seconds, len(newly_covered), text[:80],
+        "chunk %d%s: %.1f s of audio -> Whisper %.1f s, coverage %.2f s, %d new ticks | %r",
+        seq, f" [mic {mic}]" if mic and seq == 0 else "", audio_seconds, whisper_seconds, coverage_seconds,
+        len(newly_covered), text[:80],
     )
     return {
         "seq": seq,

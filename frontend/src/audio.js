@@ -20,33 +20,73 @@ function explainMicError(error) {
   return `Couldn't start the microphone (${error.message}).`;
 }
 
+// The browser can clean up background noise before we get the audio. It is on
+// by default. Open the page with "?ns=off" in the address to switch it off
+// (useful for comparing transcription quality).
+function wantNoiseSuppression() {
+  return new URLSearchParams(window.location.search).get("ns") !== "off";
+}
+
 // Start listening.
 //   chunkSeconds: length of each chunk
 //   onChunk(Int16Array): called with each finished chunk
 //   onLevel(number 0..1): called often with the current loudness, for the meter
-// Returns a function that stops the microphone (and sends the last partial chunk).
+// Returns {stop, label}: stop() turns the mic off (and sends the last partial
+// chunk); label describes the mic setup, e.g. "16000hz-ns-on".
 export async function startMic({ chunkSeconds, onChunk, onLevel }) {
   if (!navigator.mediaDevices?.getUserMedia) {
-    throw new Error("This browser can't record audio. Use a recent Chrome or Edge, on http://localhost.");
+    throw new Error("This browser can't record audio here. Use a recent Chrome or Edge, on localhost or an https:// address.");
   }
 
+  const noiseSuppression = wantNoiseSuppression();
   let stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 },
+      audio: { echoCancellation: true, noiseSuppression, autoGainControl: true, channelCount: 1 },
     });
   } catch (error) {
     throw new Error(explainMicError(error));
   }
 
-  const context = new AudioContext(); // runs at the device's own rate, usually 44.1 or 48 kHz
-  await context.audioWorklet.addModule("/pcm-worklet.js");
-  const source = context.createMediaStreamSource(stream);
-  const worklet = new AudioWorkletNode(context, "pcm-processor");
+  // Ask the browser for a 16 kHz audio context. Chrome and Edge then convert
+  // the microphone to 16 kHz themselves, with a proper low-pass filter, which
+  // is better than anything we would write by hand.
+  let context;
+  try {
+    context = new AudioContext({ sampleRate: TARGET_RATE });
+  } catch {
+    context = new AudioContext(); // the device's own rate, usually 44.1 or 48 kHz
+  }
 
-  // --- Downsampling to 16 kHz by averaging ---
-  // Each output sample is the average of `ratio` input samples (3 at 48 kHz).
+  let source;
+  let worklet;
+  const filters = [];
+  try {
+    await context.audioWorklet.addModule("/pcm-worklet.js");
+    source = context.createMediaStreamSource(stream);
+    worklet = new AudioWorkletNode(context, "pcm-processor");
+  } catch (error) {
+    stream.getTracks().forEach((track) => track.stop());
+    context.close();
+    throw new Error(`Couldn't start audio capture (${error.message}).`);
+  }
+
+  // --- Fallback downsampling, only if the context is NOT already at 16 kHz ---
+  // Sounds above 8 kHz can't exist in 16 kHz audio; left in, they fold back as
+  // noise ("aliasing"). So we first remove them with two low-pass filters,
+  // then average each group of `ratio` samples into one.
   const ratio = context.sampleRate / TARGET_RATE;
+  let input = source;
+  if (ratio > 1) {
+    for (let i = 0; i < 2; i++) {
+      const filter = context.createBiquadFilter();
+      filter.type = "lowpass";
+      filter.frequency.value = 7000;
+      input.connect(filter);
+      filters.push(filter);
+      input = filter;
+    }
+  }
   let sum = 0;
   let count = 0;
   let inputIndex = 0;
@@ -86,16 +126,22 @@ export async function startMic({ chunkSeconds, onChunk, onLevel }) {
     onLevel(Math.min(1, Math.sqrt(squares / samples.length) * 6));
   };
 
-  source.connect(worklet);
+  input.connect(worklet);
   worklet.connect(context.destination); // outputs silence; needed so the browser keeps it running
 
-  return function stop() {
+  const label = `${Math.round(context.sampleRate)}hz-ns-${noiseSuppression ? "on" : "off"}`;
+  console.info("Nkuzi microphone:", label, stream.getAudioTracks()[0].getSettings());
+
+  function stop() {
     worklet.port.onmessage = null;
     source.disconnect();
+    filters.forEach((filter) => filter.disconnect());
     worklet.disconnect();
     stream.getTracks().forEach((track) => track.stop()); // turns off the mic light
     context.close();
     if (filled >= TARGET_RATE * MIN_FINAL_SECONDS) onChunk(chunk.slice(0, filled));
     onLevel(0);
-  };
+  }
+
+  return { stop, label };
 }

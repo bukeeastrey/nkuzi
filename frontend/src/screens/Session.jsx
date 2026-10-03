@@ -241,6 +241,7 @@ export default function Session({ sessionId, onBack }) {
   const queueRef = useRef([]); // chunks waiting to be sent: [{seq, chunk}]
   const sendingRef = useRef(false);
   const nextSeqRef = useRef(0);
+  const micLabelRef = useRef(""); // e.g. "16000hz-ns-on", sent along for the backend log
   const meterRef = useRef(null); // the level meter's bar (updated directly: it changes many times a second)
 
   const generating = status === "generating";
@@ -363,7 +364,7 @@ export default function Session({ sessionId, onBack }) {
     try {
       while (queueRef.current.length > 0) {
         const { seq, chunk } = queueRef.current[0];
-        const result = await sendAudio(sessionId, seq, chunk);
+        const result = await sendAudio(sessionId, seq, chunk, micLabelRef.current);
         queueRef.current.shift();
         setWaiting(queueRef.current.length);
         if (result.text) {
@@ -406,7 +407,9 @@ export default function Session({ sessionId, onBack }) {
         await startSession(sessionId);
         setLive(true);
       }
-      stopMicRef.current = await startMic({ chunkSeconds: CHUNK_SECONDS, onChunk: handleChunk, onLevel: handleLevel });
+      const mic = await startMic({ chunkSeconds: CHUNK_SECONDS, onChunk: handleChunk, onLevel: handleLevel });
+      stopMicRef.current = mic.stop;
+      micLabelRef.current = mic.label;
       setMicOn(true);
     } catch (e) {
       setError(e.message);
