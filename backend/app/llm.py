@@ -40,13 +40,16 @@ async def is_ready() -> dict:
     return {"ok": True, "model_present": True, "message": f"{wanted} is ready."}
 
 
-async def generate_json(prompt: str, system: str, max_tokens: int) -> dict:
-    """Ask Gemma for a JSON object. Retries once if the JSON is broken."""
+async def generate_json(prompt: str, system: str, max_tokens: int, schema: dict | None = None) -> dict:
+    """Ask Gemma for a JSON object. Retries once if the JSON is broken.
+
+    Pass a JSON schema to make Ollama stick to an exact shape.
+    """
     last_error = None
     for attempt in (1, 2):
         # Second attempt: remind the model what we want.
         text = prompt if attempt == 1 else prompt + "\n\nReturn valid JSON only."
-        raw = await _generate(text, system, max_tokens)
+        raw = await _generate(text, system, max_tokens, schema)
         try:
             data = json.loads(raw)
             if isinstance(data, dict):
@@ -58,13 +61,13 @@ async def generate_json(prompt: str, system: str, max_tokens: int) -> dict:
     raise LLMError("Gemma returned an answer we couldn't read. Please try again.")
 
 
-async def _generate(prompt: str, system: str, max_tokens: int) -> str:
+async def _generate(prompt: str, system: str, max_tokens: int, schema: dict | None) -> str:
     """One call to Ollama's /api/generate. Returns the raw response text."""
     body = {
         "model": config.OLLAMA_MODEL,
         "prompt": prompt,
         "system": system,
-        "format": "json",
+        "format": schema or "json",
         "stream": False,
         "keep_alive": config.OLLAMA_KEEP_ALIVE,
         "options": {

@@ -10,6 +10,7 @@
   --amber: #a26c0d; /* corrections / needs attention */
   --amber-soft: #fbf1dc;
   --missed: #a8483f; /* only used in the recap */
+  --on-accent: #ffffff; /* text on an accent-coloured button */
 }
 
 @media (prefers-color-scheme: dark) {
@@ -24,6 +25,7 @@
     --amber: #e0a63a;
     --amber-soft: #33290f;
     --missed: #e08379;
+    --on-accent: #0f1a16;
   }
 }
 
@@ -128,4 +130,262 @@ body {
   color: var(--muted);
   font-size: 14px;
   overflow-wrap: anywhere;
+}
+
+/* --- Shared pieces --- */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 20px;
+}
+
+.button {
+  font: inherit;
+  font-weight: 600;
+  padding: 10px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+.button.small {
+  padding: 6px 10px;
+  font-size: 14px;
+}
+
+.button:disabled,
+.icon-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.link {
+  font: inherit;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+input[type="text"],
+input[type="number"],
+textarea {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.error {
+  color: var(--missed);
+  font-weight: 600;
+}
+
+.notice {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* --- New session form --- */
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field-label {
+  font-weight: 600;
+}
+
+.dropzone {
+  border: 2px dashed var(--border);
+  border-radius: 12px;
+  padding: 20px;
+  text-align: center;
+}
+
+.dropzone.dragging {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.dropzone p {
+  margin: 0 0 10px;
+}
+
+.dropzone-file {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.form .error {
+  margin: 0;
+}
+
+/* --- Outline review --- */
+.screen-title {
+  margin: 12px 0 4px;
+  font-size: 30px;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+
+.banner {
+  margin: 16px 0;
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+
+.banner.ok {
+  background: var(--accent-soft);
+  border-color: transparent;
+  color: var(--accent);
+}
+
+.banner.warn {
+  background: var(--amber-soft);
+  border-color: transparent;
+  color: var(--amber);
+}
+
+.banner-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 600;
+}
+
+.banner-note {
+  margin-top: 8px;
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.progress {
+  height: 8px;
+  margin-top: 10px;
+  border-radius: 4px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.4s ease;
+}
+
+.points {
+  list-style: none;
+  margin: 16px 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.point {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.point-text {
+  flex: 1 1 280px;
+  min-width: 0;
+  resize: none;
+  overflow: hidden;
+  line-height: 1.4;
+}
+
+.point-text:disabled {
+  opacity: 0.75;
+}
+
+.point-tools {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px 4px 10px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.chip input {
+  width: 52px;
+  padding: 4px 6px;
+  font-size: 14px;
+}
+
+.icon-button {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 16px;
+  cursor: pointer;
+}
+
+.icon-button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.icon-button.danger:hover:not(:disabled) {
+  border-color: var(--missed);
+  color: var(--missed);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: flex-end;
+  margin-top: 24px;
 }

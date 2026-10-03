@@ -45,6 +45,18 @@ COVER_KEYWORD_BONUS = _env("COVER_KEYWORD_BONUS", 0.08)
 MAX_OUTLINE_POINTS = _env("MAX_OUTLINE_POINTS", 25)
 CHECK_WINDOW_SECONDS = _env("CHECK_WINDOW_SECONDS", 90)
 
+# --- Outline building (Gemma, slow path) ---
+# Gemma reads one slide per call, which keeps the prompt tiny for gemma3:1b.
+OUTLINE_SLIDE_WORDS = _env("OUTLINE_SLIDE_WORDS", 400)  # longer slides are cut to this
+OUTLINE_POINTS_PER_SLIDE = _env("OUTLINE_POINTS_PER_SLIDE", 3)
+OUTLINE_DEDUPE_SIM = _env("OUTLINE_DEDUPE_SIM", 0.9)  # above this, two points are "the same"
+
+# --- Uploads ---
+MAX_PDF_MB = _env("MAX_PDF_MB", 50)
+LARGE_DECK_SLIDES = _env("LARGE_DECK_SLIDES", 60)  # warn above this many slides
+
+CHECK_WINDOW_SECONDS = _env("CHECK_WINDOW_SECONDS", 90)
+
 # --- Folders ---
 DATA_DIR = _env("DATA_DIR", BACKEND_DIR / "data" / "sessions")
 # Downloaded Whisper + embedding models are kept here so they survive reboots

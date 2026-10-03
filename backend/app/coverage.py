@@ -36,6 +36,18 @@ def is_loaded() -> bool:
     return _embedder is not None
 
 
+# Point embeddings live in memory only: {session id: {point id: vector}}.
+_point_vectors: dict[str, dict[str, np.ndarray]] = {}
+
+
+def cache_point_embeddings(session: dict):
+    """Embed every outline point (text + keywords). Call when the outline changes."""
+    points = session["outline"]["points"]
+    texts = [p["text"] + " " + " ".join(p["keywords"]) for p in points]
+    vectors = embed(texts) if texts else []
+    _point_vectors[session["id"]] = {p["id"]: v for p, v in zip(points, vectors)}
+
+
 def embed(texts: list[str]) -> np.ndarray:
     """Texts -> one unit-length vector per row, so dot product = cosine similarity."""
     vectors = np.array(list(load_embedder().embed(texts)), dtype=np.float32)

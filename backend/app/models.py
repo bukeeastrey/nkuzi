@@ -2,6 +2,17 @@
 from pydantic import BaseModel
 
 
+class PointIn(BaseModel):
+    """One outline point as sent by the UI. New points have no id yet."""
+    id: str | None = None
+    text: str
+    slide: int | None = None
+
+
+class OutlineUpdate(BaseModel):
+    points: list[PointIn]
+
+
 class Health(BaseModel):
     app_name: str
     model_name: str

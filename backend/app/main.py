@@ -3,11 +3,13 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from pathlib import Path
+
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import config, coverage, llm, transcribe
-from .models import Health
+from . import config, coverage, llm, outline, pdf, store, transcribe
+from .models import Health, OutlineUpdate
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)  # don't log every Ollama ping
@@ -78,3 +80,92 @@ async def health():
         embedder_loaded=coverage.is_loaded(),
         embedder_message=load_messages["embedder"],
     )
+
+
+# ---------- sessions + outline ----------
+
+def _get_session(session_id: str) -> dict:
+    session = store.get(session_id)
+    if session is None:
+        raise HTTPException(404, "That session doesn't exist any more.")
+    return session
+
+
+def _outline_response(session: dict) -> dict:
+    o = session["outline"]
+    return {
+        "status": o["status"],
+        "source": o["source"],
+        "progress": o["progress"],
+        "message": o["message"],
+        "points": o["points"],
+    }
+
+
+@app.post("/api/sessions")
+async def create_session(
+    pdf_file: UploadFile = File(..., alias="pdf"),
+    title: str = Form(""),
+    explainer: str = Form(""),
+):
+    data = await pdf_file.read()
+    if len(data) > config.MAX_PDF_MB * 1024 * 1024:
+        raise HTTPException(400, f"That PDF is larger than {config.MAX_PDF_MB} MB. Export a smaller copy and try again.")
+    try:
+        slides = await asyncio.to_thread(pdf.extract_slides, data)
+    except pdf.PdfError as e:
+        raise HTTPException(400, str(e))
+
+    # No title typed? Use the file name.
+    title = title.strip() or Path(pdf_file.filename or "Untitled").stem
+    session = store.new_session(title, explainer.strip(), slides, pdf.build_vocab(slides))
+
+    # Instant outline from the slide text; Gemma improves it in the background.
+    session["outline"]["points"] = outline.fallback_outline(slides)
+    store.save(session)
+    outline.start_generation(session)
+
+    warning = ""
+    if len(slides) > config.LARGE_DECK_SLIDES:
+        warning = (
+            f"This is a big deck ({len(slides)} slides). The outline is capped at "
+            f"{config.MAX_OUTLINE_POINTS} points and Gemma will take a while."
+        )
+    return {
+        "session_id": session["id"],
+        "title": session["title"],
+        "slides_count": len(slides),
+        "outline": session["outline"]["points"],
+        "outline_status": "generating",
+        "warning": warning,
+    }
+
+
+@app.get("/api/sessions/{session_id}")
+async def get_session(session_id: str):
+    return _get_session(session_id)
+
+
+@app.get("/api/sessions/{session_id}/outline")
+async def get_outline(session_id: str):
+    session = _get_session(session_id)
+    o = session["outline"]
+    # "generating" on disk but nothing running = the backend restarted mid-way.
+    if o["status"] == "generating" and not outline.is_running(session_id):
+        o.update(status="fallback_only", message="Gemma was interrupted. Using the outline built from your slides.")
+        store.save(session)
+    return _outline_response(session)
+
+
+@app.put("/api/sessions/{session_id}/outline")
+async def put_outline(session_id: str, update: OutlineUpdate):
+    session = _get_session(session_id)
+    points = outline.clean_user_points([p.model_dump() for p in update.points], session)
+    if not points:
+        raise HTTPException(400, "The outline needs at least one point.")
+    # The explainer's version wins: stop Gemma if it is still working.
+    outline.cancel(session_id)
+    session["outline"].update(status="ready", source="edited", message="", points=points)
+    store.save(session)
+    await asyncio.to_thread(coverage.cache_point_embeddings, session)
+    return _outline_response(session)
