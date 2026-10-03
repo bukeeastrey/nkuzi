@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   dismissIssue,
+  endSession,
   getCheck,
   getOutline,
   getSession,
@@ -13,7 +14,7 @@ import {
 import { startMic } from "../audio.js";
 import { CHUNK_SECONDS } from "../config.js";
 
-const TRANSCRIPT_LINES = 6; // how many recent lines the transcript panel shows
+const TRANSCRIPT_LINES = 4; // how many recent lines the transcript panel shows
 const FRESH_MS = 3000; // how long a newly ticked point stays highlighted
 
 // React needs a stable "key" for each row. Saved points use their id;
@@ -267,7 +268,7 @@ function Transcript({ lines, micOn }) {
   );
 }
 
-export default function Session({ sessionId, onBack }) {
+export default function Session({ sessionId, onBack, onEnd }) {
   const [session, setSession] = useState(null); // title, slides, unit...
   const [loadError, setLoadError] = useState("");
   const [points, setPoints] = useState([]);
@@ -294,6 +295,7 @@ export default function Session({ sessionId, onBack }) {
   const [checkStatus, setCheckStatus] = useState("idle"); // idle | running | done | error
   const [checkMessage, setCheckMessage] = useState("");
   const [showCheck, setShowCheck] = useState(false);
+  const [ending, setEnding] = useState(false);
 
   // Things the audio callbacks need, kept in refs so they are always current.
   const stopMicRef = useRef(null); // function that turns the mic off
@@ -535,6 +537,24 @@ export default function Session({ sessionId, onBack }) {
     setLive(false);
   }
 
+  // End the session and open the recap.
+  async function handleEnd() {
+    setEnding(true);
+    setError("");
+    try {
+      stopMic();
+      // Wait until the last chunks are transcribed, so the recap is complete.
+      while (sendingRef.current || queueRef.current.length > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+      }
+      await endSession(sessionId);
+      onEnd();
+    } catch (e) {
+      setError(e.message);
+      setEnding(false);
+    }
+  }
+
   if (loadError) {
     return (
       <section>
@@ -567,6 +587,7 @@ export default function Session({ sessionId, onBack }) {
     <section className="session">
       <button type="button" className="link" onClick={onBack}>← New session</button>
       <h1 className="screen-title">{session.title}</h1>
+      {session.explainer && <p className="muted session-meta">Explained by {session.explainer}</p>}
 
       {/* The mic bar stays in view while the checklist scrolls. */}
       <div className={micOn ? "listen-bar on" : "listen-bar"}>
@@ -665,7 +686,16 @@ export default function Session({ sessionId, onBack }) {
       {live ? (
         <>
           <Transcript lines={transcript} micOn={micOn} />
-          <Checklist points={points} slides={session.slides} unit={unit} covered={covered} fresh={fresh} onToggle={handleToggle} />
+          {points.length === 0 ? (
+            <p className="banner">Your outline is empty. Press "Edit outline" and add the points you want to cover.</p>
+          ) : (
+            <Checklist points={points} slides={session.slides} unit={unit} covered={covered} fresh={fresh} onToggle={handleToggle} />
+          )}
+          <div className="actions">
+            <button type="button" className="button primary" onClick={handleEnd} disabled={ending}>
+              {ending ? "Finishing…" : "End session and see recap"}
+            </button>
+          </div>
         </>
       ) : (
         <>

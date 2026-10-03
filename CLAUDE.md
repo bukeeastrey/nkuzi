@@ -47,7 +47,7 @@ Nkuzi sits **beside** Google Meet or WhatsApp; it is not the call itself. The ex
 4. **Windows first.** The dev machine is Windows (PowerShell). Use `pathlib`, no bash-only scripts. Provide `.ps1` or `npm`/Python commands that work in PowerShell.
 5. **Keep dependencies minimal.** Ask the user before adding any dependency not listed in §6.
 6. **Build in milestones (§10).** After each milestone: run it, tell the user exactly how to test it, and wait for confirmation before the next one.
-7. **Never let the LLM block the live loop.** Gemma is slow on this machine. Live transcription + coverage tracking must never wait on Gemma.
+7. **Never let the LLM block the live loop.** Gemma is slow on this machine. Live transcription + coverage tracking never wait for a Gemma *answer*. One measured exception: while "Check me" is generating, new audio chunks are held (they queue in the browser) and transcribed when it finishes, because running Whisper beside a generating Gemma took 20–30 s per chunk and slowed the check too (§7.5).
 8. **Never show a correction that isn't grounded in the slides** (see §7.5). A false correction to a medical student is worse than none. The same goes for the outline: **every Gemma outline point is verified in code against a single slide line** (§7.4). Keep this guardrail whatever model is used.
 9. Make model names, thresholds, and chunk sizes configurable in `backend/app/config.py` (with env-var overrides), not hard-coded across files.
 10. Write clear code with short comments. Bukee is learning React/JS/Python and will read it.
@@ -225,6 +225,11 @@ COVER_KEYWORD_BONUS = 0.06      # added when most key terms of a point were said
 COVER_KEYWORD_SHARE = 0.75      # "most" = this share of the point's key terms
 MAX_OUTLINE_POINTS = 40
 CHECK_WINDOW_SECONDS = 90       # how much recent speech "Check me" looks at
+CHECK_PAUSES_TRANSCRIPTION = True  # hold audio chunks while a check runs
+CHECK_HOLD_SECONDS = 120        # never hold a chunk longer than this
+OLLAMA_NUM_THREAD = 0           # 0 = Ollama decides; 1 made a check take 5 minutes
+SAVE_AUDIO_CHUNKS = True        # debug: save each chunk as a .wav (turn OFF after the Whisper comparison)
+DEBUG_AUDIO_DIR = backend/data/debug_audio
 OUTLINE_SLIDE_WORDS = 400       # longer slides are cut to this in the prompt
 OUTLINE_NOTES_WORDS = 120       # speaker notes are cut to this in the prompt
 OUTLINE_POINTS_PER_SLIDE = 3
@@ -302,16 +307,22 @@ Anything else: "Nkuzi reads .pdf, .pptx and .docx files. Export your slides to o
 - Measured on the 35-slide COAD lecture with `gemma4:e2b-it-qat`: 27 content slides, 38 points, 16 Gemma calls, 274 s (about 16 s per call).
 
 ### 7.5 `check.py`: "Check me" (on request only) — the anti-hallucination rules
-1. Take transcript text from the last `CHECK_WINDOW_SECONDS`.
-2. Retrieve the **top 3 slides** most similar to that text (embeddings over slide text).
-3. Prompt Gemma with ONLY those slides + the transcript window:
+1. Take transcript text from the last `CHECK_WINDOW_SECONDS` of listening.
+2. Retrieve the **top 3 slides** most similar to that text (embeddings over slide text; content slides only).
+3. **Step 1, propose.** Prompt Gemma with ONLY those slides (each cut to 150 words) + the transcript window:
    - System: "You check a student's spoken explanation against their lecture slides. Report only clear factual contradictions between what the student said and what the slides say. Do not report omissions, opinions, style, or anything the slides don't mention. If nothing contradicts the slides, return an empty list."
-   - Output JSON: `{"issues": [{"said": "what the student said (short)", "slide": <number>, "slide_quote": "exact words copied from the slide", "fix": "one short sentence"}]}`
-4. **Verify every issue in code**: `slide_quote` must fuzzy-match text in the cited slide (`rapidfuzz.fuzz.partial_ratio >= 85`). If not, **discard it**. Also discard issues whose `said` doesn't fuzzy-match the transcript window (≥ 70).
-5. Return verified issues; also store them on the session for the recap.
-6. If none: return `{"issues": [], "message": "No contradictions with your slides found."}`.
-7. This call can take 20–60 s on this laptop. The UI shows a non-blocking "Checking against slides…" state while live tracking continues.
-8. Preview result (from `compare_models.py`): with one slide and one sentence, asking for `{"slide_quote", "contradicts"}` (quote first, then the verdict) and a JSON schema, `gemma4:e2b-it-qat` got 4 of 4 right in 17–21 s each. `gemma3:1b` said "contradicts" for everything, so **"Check me" must not be trusted on gemma3:1b**: when that model is configured, disable the button or label results as unreliable.
+   - Output (JSON schema, at most 3): `{"issues": [{"said", "slide", "slide_quote", "fix"}]}`
+4. **Verify every issue in code** (`verify_issue`):
+   - `slide_quote` must fuzzy-match text on one of the shown slides (`partial_ratio >= 85`). The slide Gemma named is tried first.
+   - `said` must fuzzy-match the transcript window (`>= 70`). The matching stretch of the transcript, with 4 words of context each side, becomes `heard`.
+   - `said` and `slide_quote` must not be the same statement (`token_set_ratio < 90`).
+5. **Step 2, confirm.** For each surviving issue, a tiny yes/no question to Gemma: does `said` contradict `slide_quote`? (`{"contradicts": bool}`). Only "yes" is kept. Small models answer this far more reliably than the open question; on the test recording it rejected a correct statement that step 1 had flagged.
+6. An issue is `{id, said, heard, slide, slide_quote, fix, at, dismissed}`. Issues are stored on the session; a later check does not repeat one already found.
+7. If none: `{"issues": [], "message": "No contradictions with your slides found."}`.
+8. **Dismissing.** The UI shows `heard` ("Nkuzi heard") next to the slide quote and the fix, with a **"That's not what I said"** button (`POST /issues/{id}/dismiss`). A dismissed issue is hidden and **never reaches the recap**. This matters because Whisper mishears (e.g. "hypotension" as "hypertension"), which would otherwise produce a false correction.
+9. Runs as a background job (`start_job` / `get_job`), one at a time per session. The UI polls every 2 s and shows a non-blocking "Checking what you said against your slides…".
+10. **Timing (measured): about 100 s** with `gemma4:e2b-it-qat` (60 s to propose, 5–16 s per confirmation). While it runs, audio chunks wait (`check.wait_until_idle`) and catch up afterwards at 1–2 s each. Without that, Whisper took 20–30 s per chunk and one check took 260 s.
+11. `gemma4:e2b-it-qat` got 4 of 4 on a contradiction test where `gemma3:1b` said "contradicts" for everything, so **"Check me" must not be trusted on gemma3:1b**.
 
 ### 7.6 `transcribe.py`: live speech-to-text (fast path)
 - Load `WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8", cpu_threads=WHISPER_THREADS)` **once at startup**.
@@ -338,14 +349,10 @@ Anything else: "Nkuzi reads .pdf, .pptx and .docx files. Export your slides to o
 - Editing the outline drops ticks of deleted points (`forget_removed_points`).
 
 ### 7.8 `recap.py`
-- Build deterministically (no LLM needed, so it's instant):
-  - Topic, explainer name, date, duration.
-  - Covered points ✓ (count / total).
-  - Missed points ✗ (with slide numbers).
-  - Corrections (verified issues) with slide numbers and the fix.
-- `whatsapp_text`: plain text using WhatsApp formatting (`*bold*`, `_italic_`, line breaks, ✅ ❌ ⚠️ emoji). Keep it under ~1500 characters; truncate long lists with "+N more".
-- Optional (only if time allows, behind a button): Gemma writes a 2-sentence summary of the transcript. Never block the recap on this.
-- Save full transcript too (downloadable as .txt).
+- Built with plain code (no LLM), so it is instant: `build_recap(session)` returns title, explainer, date, `duration_seconds` (listening time), `total`, `covered` points, `missed` points, `corrections` (issues that were **not dismissed**), and `whatsapp_text`.
+- `whatsapp_text`: WhatsApp formatting (`*bold*`, `_italic_`, ✅ ❌ ⚠️), kept under 1500 characters. Missed points and corrections matter most, so the covered list shrinks first; long lists end with "+N more".
+- `transcript_text(session)`: the full transcript as plain text with `[m:ss]` times, for the download.
+- Not built (stretch): a Gemma 2-sentence summary; the past-sessions list.
 
 ### 7.9 `store.py`
 - One JSON file per session: `data/sessions/<session_id>.json` holding title, explainer, created_at, unit, slides, vocab, outline (+ status, source, progress, stats), transcript segments (`{seq, at, text}`), `audio_seconds` (how much has been listened to), covered map, issues, started_at, ended_at.
@@ -362,12 +369,14 @@ Anything else: "Nkuzi reads .pdf, .pptx and .docx files. Export your slides to o
 | GET | `/sessions/{id}/outline` | `{status: generating\|ready\|fallback_only, source: slides\|gemma\|edited, progress, message, points}` |
 | PUT | `/sessions/{id}/outline` | save user-edited outline (re-embed points); cancels a running Gemma outline |
 | POST | `/sessions/{id}/start` | mark live start time |
-| POST | `/sessions/{id}/audio` | body: raw Int16 PCM (`application/octet-stream`), query `seq` → `{seq, text, at, whisper_seconds, coverage_seconds, audio_seconds, newly_covered: [ids], covered: [ids], covered_count, total}` |
+| POST | `/sessions/{id}/audio` | body: raw Int16 PCM (`application/octet-stream`), query `seq` (and optional `mic` label) → `{seq, text, at, whisper_seconds, coverage_seconds, audio_seconds, newly_covered: [ids], covered: [ids], covered_count, total}` |
 | POST | `/sessions/{id}/points/{pid}/toggle` | manual tick/untick → `{covered: [ids], covered_count, total}` |
 | GET | `/sessions/{id}/missed` | `{points: [...], covered, covered_count, total}` (instant) |
 | POST | `/sessions/{id}/check` | starts "Check me" job → `{job_id}` |
 | GET | `/sessions/{id}/check/{job_id}` | `{status, issues, message}` |
-| POST | `/sessions/{id}/end` | finalize → recap object incl. `whatsapp_text` |
+| POST | `/sessions/{id}/issues/{issue_id}/dismiss` | "That's not what I said" → `{issues}` |
+| POST | `/sessions/{id}/end` | sets `ended_at` (once) → recap object incl. `whatsapp_text` |
+| GET | `/sessions/{id}/recap` | the same recap, without ending the session |
 | GET | `/sessions/{id}/transcript.txt` | download transcript |
 
 - CORS: allow `http://localhost:5173`.
@@ -380,8 +389,10 @@ Anything else: "Nkuzi reads .pdf, .pptx and .docx files. Export your slides to o
 
 ### 8.1 Audio capture (`audio.js` + `public/pcm-worklet.js`)
 - `navigator.mediaDevices.getUserMedia({audio: {echoCancellation: true, noiseSuppression: true, channelCount: 1}})`.
-- AudioContext (whatever native rate, usually 44.1/48 kHz) → AudioWorkletNode that posts Float32 frames to the main thread.
-- Main thread: downsample to **16 kHz** (simple linear/averaging resampler), accumulate, and every `CHUNK_SECONDS` convert to Int16 and call `onChunk(Int16Array)`.
+- **`new AudioContext({ sampleRate: 16000 })`**: Chrome and Edge then resample the mic to 16 kHz themselves with a proper low-pass filter. An AudioWorkletNode posts Float32 frames (2048 at a time) to the main thread.
+- Fallback if the browser refuses a 16 kHz context: two low-pass filters at 7 kHz, then averaging down to 16 kHz.
+- Main thread: accumulate, and every `CHUNK_SECONDS` convert to Int16 and call `onChunk(Int16Array)`.
+- Opening the page with `?ns=off` turns browser noise suppression off (for comparing transcription quality). Each chunk carries a `mic` label such as `16000hz-ns-on`.
 - `api.js` POSTs each chunk to `/audio` with an increasing `seq`. If a request is still in flight, **queue** chunks (don't drop; don't send in parallel).
 - Show a small live mic-level meter so the user knows it's hearing them.
 - **Do not use MediaRecorder** (its chunks aren't independently decodable).
@@ -405,14 +416,14 @@ The open session's id is in the address bar (`#/session/<id>`), so a reload or a
    - **While listening**: the mic button pauses/resumes; level meter + elapsed timer; "7 / 18 points covered" with a thin progress bar; collapsible "What Nkuzi heard" transcript (last 6 lines). Points turn green with a ✓ when covered, with a gentle ring for 3 s; click a point to tick/untick by hand. If transcription lags, the mic bar says "falling behind (N chunks waiting)".
    - Reopening a started session (reload, or its `#/session/<id>` link) goes straight to the checklist with its transcript and ticks.
    - **"What did I miss?"** button (in the mic bar) → panel listing uncovered points with slide numbers (instant, computed in the browser).
-   - **"Check me"** button → non-blocking "Checking against your slides…" → results panel. Each issue shows: what you said, slide N quote, fix. Empty result shows a reassuring message.
+   - **"Check me"** button (in the mic bar, with a count badge) → non-blocking "Checking what you said against your slides…" → corrections panel. Each issue shows **"Nkuzi heard"** (the transcript's words) next to **"Slide N says"** (the quote), the fix, and a **"That's not what I said"** button. Empty result shows "No contradictions with your slides found."
    - Corrections never pop up uninvited; they appear only after "Check me".
-   - "End session" button → Recap.
-3. **Recap**
-   - Summary cards: covered ✓, missed ✗, corrections ⚠️, duration.
-   - Missed list, corrections list.
-   - **"Copy for WhatsApp"** button (copies `whatsapp_text`, shows "Copied!").
-   - "Download transcript" link. "New session" button.
+   - **"End session and see recap"** button under the checklist: stops the mic, waits for the last chunks to be transcribed, then opens the recap (`#/session/<id>/recap`).
+3. **Recap** (`Recap.jsx`)
+   - Summary cards: covered n/total, missed, corrections, duration (2 × 2 on a narrow panel).
+   - **"Copy for WhatsApp"** button (copies `whatsapp_text`, shows "Copied!"; falls back to the old copy method on non-secure pages), "Download transcript", "New session", "Back to the session".
+   - Missed list with slide numbers, corrections list (said / slide quote / fix), and collapsible "Covered" and "The WhatsApp message" sections.
+   - Friendly empty states: nothing recorded, nothing missed, no corrections.
 
 ### 8.3 Visual design
 - Calm, focused, high-contrast. Should feel like a quiet co-pilot, not a dashboard.
@@ -428,7 +439,9 @@ The open session's id is in the address bar (`#/session/<id>`), so a reload or a
 
 - `backend/scripts/check_setup.py`: checks Ollama is reachable, model pulled, loads Whisper + embedder, runs a tiny Gemma JSON prompt, transcribes `samples/sample.wav`, and **prints timings** for each. Run this first on the real laptop.
 - `backend/scripts/make_samples.py` writes the same "Beta blockers" deck to `backend/samples/` as `.pdf`, `.pptx` (with a table slide, speaker notes and a notes-only slide) and `.docx` (headings, long paragraphs, a table). `samples/sample.wav` is a 47 s text-to-speech recording explaining the deck (8 of 18 points); a real voice recording would be a better test.
-- `backend/scripts/send_wav.py [deck] [wav]` plays a .wav through the running backend chunk by chunk and prints what was heard, Whisper's time per chunk, which points ticked, and which models Ollama has loaded. This tests everything except the browser's microphone capture.
+- `samples/sample_mistakes.wav` contains two deliberate mistakes (atenolol called non-selective; non-selective blockers called safe in asthma) and one correct statement. `send_wav.py samples\beta_blockers.pptx samples\sample_mistakes.wav --check` should report exactly those two.
+- `backend/scripts/compare_whisper.py <debug_audio folder> --deck <slides>` runs tiny.en, base.en and distil-small.en (all three already downloaded) over saved microphone chunks and prints transcripts with time per chunk. **Pending:** run it on Bukee's real-voice recording, pick the most accurate model under ~5 s per 8 s chunk, make it the default, and turn `SAVE_AUDIO_CHUNKS` off.
+- `backend/scripts/send_wav.py [deck] [wav] [--check]` plays a .wav through the running backend chunk by chunk and prints what was heard, Whisper's time per chunk, which points ticked, and which models Ollama has loaded. This tests everything except the browser's microphone capture.
 - `backend/scripts/compare_models.py <model> <model>` measures each model on the sample `.pptx`: load time, seconds per slide, peak RAM, verification stats, and a 4-case contradiction test. **Stop the backend first.** Results are saved to `backend/data/model_comparison.json`.
 - Unit-ish tests (plain `pytest`, optional): quote verification in `check.py` rejects fabricated quotes; coverage marks a point covered for a paraphrase and not for an unrelated sentence.
 - Manual end-to-end test script in README: upload a sample deck → review outline → Start listening → speak 3 points → see ticks → "What did I miss?" → deliberately say something wrong (e.g. wrong drug class) → "Check me" catches it with the slide quote → End → copy WhatsApp recap.
@@ -454,11 +467,11 @@ AudioWorklet capture wired to the "Start listening" button, 16 kHz Int16 chunks,
 ✅ Done when: explaining points ticks them off reliably with few false ticks.
 → **This is the minimum demoable product. Commit and tag it.**
 
-**M4 — Check me (≈1.5 h)**
+**M4 — Check me (DONE)**
 `check.py` with retrieval, Gemma prompt, quote verification, job polling, results panel.
 ✅ Done when: a deliberate mistake is caught with a correct slide quote, and correct explanations return "no contradictions".
 
-**M5 — Recap + polish (≈1.5 h)**
+**M5 — Recap + polish (DONE, except the past-sessions list)**
 `recap.py`, Recap screen, WhatsApp copy, transcript download, past sessions list, visual polish, empty/error states, README.
 ✅ Done when: full end-to-end flow works smoothly and looks good for a screen recording.
 

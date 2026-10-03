@@ -89,3 +89,13 @@ export function getCheck(sessionId, jobId) {
 export function dismissIssue(sessionId, issueId) {
   return request(`/sessions/${sessionId}/issues/${issueId}/dismiss`, { method: "POST" });
 }
+
+// Finish the session. Returns the recap.
+export function endSession(sessionId) {
+  return request(`/sessions/${sessionId}/end`, { method: "POST" });
+}
+
+// Covered / missed / corrections / duration, plus the WhatsApp text.
+export function getRecap(sessionId) {
+  return request(`/sessions/${sessionId}/recap`);
+}

@@ -11,8 +11,9 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 
-from . import check, config, coverage, llm, outline, pdf, slides as slide_files, store, transcribe
+from . import check, config, coverage, llm, outline, pdf, recap, slides as slide_files, store, transcribe
 from .models import Health, OutlineUpdate
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s: %(message)s")
@@ -320,3 +321,31 @@ async def dismiss_issue(session_id: str, issue_id: str):
         raise HTTPException(404, "That correction doesn't exist any more.")
     store.save(session)
     return {"issues": session["issues"]}
+
+
+# ---------- recap ----------
+
+@app.post("/api/sessions/{session_id}/end")
+async def end_session(session_id: str):
+    """Finish the session and return its recap (safe to call more than once)."""
+    session = _get_session(session_id)
+    if not session["ended_at"]:
+        session["ended_at"] = datetime.now().isoformat(timespec="seconds")
+        store.save(session)
+    return recap.build_recap(session)
+
+
+@app.get("/api/sessions/{session_id}/recap")
+async def get_recap(session_id: str):
+    return recap.build_recap(_get_session(session_id))
+
+
+@app.get("/api/sessions/{session_id}/transcript.txt")
+async def download_transcript(session_id: str):
+    session = _get_session(session_id)
+    # A file name made only of safe characters, from the session title.
+    name = re.sub(r"[^A-Za-z0-9]+", "_", session["title"]).strip("_") or "session"
+    return PlainTextResponse(
+        recap.transcript_text(session),
+        headers={"Content-Disposition": f'attachment; filename="{name}_transcript.txt"'},
+    )

@@ -2,12 +2,16 @@ import { useEffect, useState } from "react";
 import { getHealth } from "./api.js";
 import Setup from "./screens/Setup.jsx";
 import Session from "./screens/Session.jsx";
+import Recap from "./screens/Recap.jsx";
 
-// The open session's id lives in the address bar ("#/session/abc123"), so
-// reloading the page (or resizing it into a side panel) keeps you in place.
-function sessionIdFromHash() {
-  const match = window.location.hash.match(/^#\/session\/([a-f0-9]+)$/);
-  return match ? match[1] : null;
+// Where we are lives in the address bar, so reloading the page (or resizing
+// it into a side panel) keeps you in place:
+//   "#/session/abc123"        the session screen
+//   "#/session/abc123/recap"  its recap
+function routeFromHash() {
+  const match = window.location.hash.match(/^#\/session\/([a-f0-9]+)(\/recap)?$/);
+  if (!match) return { screen: "setup", sessionId: null };
+  return { screen: match[2] ? "recap" : "session", sessionId: match[1] };
 }
 
 // Shows nothing when all is well. When something is broken, says what and how to fix it.
@@ -48,34 +52,33 @@ function ProblemBanner() {
   );
 }
 
-// Two screens, no router needed: "setup" (home) and "session"
-// (outline + listening on one screen). The recap arrives in a later milestone.
+// Three screens, no router needed: "setup" (home), "session" (outline +
+// listening on one screen) and "recap".
 export default function App() {
-  const [sessionId, setSessionId] = useState(sessionIdFromHash);
+  const [route, setRoute] = useState(routeFromHash);
 
   // Back/forward buttons change the hash; follow them.
   useEffect(() => {
-    const onHashChange = () => setSessionId(sessionIdFromHash());
+    const onHashChange = () => setRoute(routeFromHash());
     window.addEventListener("hashchange", onHashChange);
     return () => window.removeEventListener("hashchange", onHashChange);
   }, []);
 
-  function openSession(id) {
-    window.location.hash = `#/session/${id}`;
-  }
-
-  function goHome() {
-    window.location.hash = "";
-  }
+  const openSession = (id) => (window.location.hash = `#/session/${id}`);
+  const openRecap = (id) => (window.location.hash = `#/session/${id}/recap`);
+  const goHome = () => (window.location.hash = "");
+  const { screen, sessionId } = route;
 
   return (
     <div className="app">
       <ProblemBanner />
       <main className="main">
-        {sessionId ? (
-          <Session key={sessionId} sessionId={sessionId} onBack={goHome} />
-        ) : (
-          <Setup onCreated={openSession} />
+        {screen === "setup" && <Setup onCreated={openSession} />}
+        {screen === "session" && (
+          <Session key={sessionId} sessionId={sessionId} onBack={goHome} onEnd={() => openRecap(sessionId)} />
+        )}
+        {screen === "recap" && (
+          <Recap key={sessionId} sessionId={sessionId} onBackToSession={() => openSession(sessionId)} onNewSession={goHome} />
         )}
       </main>
       <footer className="footer">Running offline · Gemma</footer>
