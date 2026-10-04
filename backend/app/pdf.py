@@ -149,13 +149,30 @@ def is_distinctive(word: str, first_in_line: bool = False) -> bool:
     return word[0].isupper() and len(word) >= 4 and not first_in_line
 
 
-def build_vocab(slides: list[dict], max_chars: int = 400) -> str:
-    """The deck's distinctive terms, most frequent first, as one comma-separated string.
+# Long words that appear in any lecture. Whisper already knows how to spell
+# them, so they would only waste space in the hint.
+GENERIC_WORDS = set(
+    "introduction features clinical management medicine disease diseases patients patient "
+    "characterized associated affected advanced exposure limitation abnormal common commonly "
+    "treatment increased increases decrease decreased following including important "
+    "different differential diagnosis presentation complications investigation investigations "
+    "definition definitions classification epidemiology pathology pathogenesis pathophysiology "
+    "prognosis conclusion references objectives overview outline factors usually presents "
+    "development developed function functional structure structural response progressive "
+    "symptoms syndrome condition conditions therapy examples especially generally commonest "
+    "persistent significant particles physical history general especially estimated reported "
+    "prevalence likely distinct represents severe chronic acute".split()
+)
+VOCAB_TERMS = 30  # how many terms the Whisper hint holds
 
-    This is given to Whisper as a hint so it spells medical terms correctly.
-    Whisper's prompt is short (~224 tokens, and medical words use several
-    tokens each), so we cap the length. Anything beyond the limit would push
-    the most frequent terms out of the prompt.
+
+def build_vocab(slides: list[dict], max_terms: int = VOCAB_TERMS) -> str:
+    """The deck's ~30 most distinctive terms, as one comma-separated string.
+
+    This is given to Whisper as a hint so it spells medical terms the way the
+    slides do. It is kept short on purpose: a long list of words in the prompt
+    takes attention away from the audio, and generic words ("features",
+    "patients") add nothing.
     """
     counts = Counter()
     spelling = {}  # lower-case term -> the spelling first seen on the slides
@@ -163,18 +180,20 @@ def build_vocab(slides: list[dict], max_chars: int = 400) -> str:
         # Speaker notes count too: the explainer is likely to say those words.
         for line in (slide["text"] + "\n" + slide.get("notes", "")).split("\n"):
             for i, word in enumerate(WORD_RE.findall(line)):
-                if is_distinctive(word, first_in_line=(i == 0)):
-                    key = word.lower()
-                    counts[key] += 1
-                    spelling.setdefault(key, word)
+                key = word.lower()
+                if key in GENERIC_WORDS or not is_distinctive(word, first_in_line=(i == 0)):
+                    continue
+                counts[key] += 1
+                spelling.setdefault(key, word)
 
-    vocab = ""
-    for key, _ in counts.most_common():  # ties keep slide order
-        addition = spelling[key] if not vocab else ", " + spelling[key]
-        if len(vocab) + len(addition) > max_chars:
-            break
-        vocab += addition
-    return vocab
+    # Most distinctive first: long or unusual-looking terms that the deck keeps using.
+    def score(key: str) -> float:
+        word = spelling[key]
+        unusual = len(key) >= 10 or word.isupper() or any(c.isdigit() for c in word) or not key.isascii()
+        return counts[key] + (2 if unusual else 0)
+
+    ranked = sorted(counts, key=lambda key: -score(key))  # ties keep slide order
+    return ", ".join(spelling[key] for key in ranked[:max_terms])
 
 
 def split_sentences(text: str) -> list[str]:

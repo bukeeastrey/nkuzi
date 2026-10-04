@@ -14,6 +14,7 @@ import numpy as np
 from rapidfuzz import fuzz
 
 from . import config, coverage, llm, outline, prompts, store
+from .pdf import WORD_RE
 
 log = logging.getLogger("nkuzi.check")
 
@@ -25,6 +26,11 @@ SAME_TEXT = 90  # said and quote this alike = agreement, not a contradiction
 CONTEXT_WORDS = 4  # words shown around the matched speech in "What Nkuzi heard"
 SLIDE_WORDS = 150  # each slide is cut to this many words in the prompt
 NO_ISSUES_MESSAGE = "No contradictions with your slides found."
+UNCLEAR_MESSAGE = "I couldn't hear you clearly enough to check. Try again closer to the mic."
+
+# "Heard clearly" means: enough words, and what was heard is about the slides.
+MIN_WORDS = 15  # fewer words than this is too little to judge
+CLEAR_MATCH = 0.65  # typical similarity between a transcript line and its closest slide
 
 # Set while no check is running. Audio chunks wait for it (see wait_until_idle).
 _idle = asyncio.Event()
@@ -32,7 +38,7 @@ _idle.set()
 
 _jobs: dict[str, dict] = {}  # job id -> {session_id, status, issues, message}
 _running: dict[str, str] = {}  # session id -> job id of the check in progress
-_slide_vectors: dict[str, tuple[list[dict], np.ndarray]] = {}  # session id -> (slides, embeddings)
+_slide_vectors_cache: dict[str, tuple[list[dict], np.ndarray]] = {}  # session id -> (slides, embeddings)
 
 
 def recent_speech(session: dict) -> list[dict]:
@@ -41,12 +47,39 @@ def recent_speech(session: dict) -> list[dict]:
     return [line for line in session["transcript"] if line["at"] >= cutoff]
 
 
+def _slide_vectors(session: dict) -> tuple[list[dict], np.ndarray]:
+    """The content slides and their embeddings (computed once per session)."""
+    if session["id"] not in _slide_vectors_cache:
+        slides = outline.content_slides(session["slides"]) or session["slides"]
+        _slide_vectors_cache[session["id"]] = (slides, coverage.embed([s["text"] for s in slides]))
+    return _slide_vectors_cache[session["id"]]
+
+
+def heard_clearly(session: dict, lines: list[dict]) -> bool:
+    """Is the recent transcript good enough to judge?
+
+    If Nkuzi misheard most of it, "no contradictions found" would be a false
+    comfort, so in that case we say so instead of checking.
+
+    Two tests: enough real words, and the lines must be about the slides.
+    Measured with bge-small: clearly heard explanations score about 0.78
+    against their best-matching slide, garbled ones about 0.57.
+    """
+    texts = [line["text"] for line in lines if len(line["text"].split()) >= 4]
+    words = [w for text in texts for w in WORD_RE.findall(text) if w.isalpha() and len(w) >= 2]
+    if len(words) < MIN_WORDS:
+        log.info("Check me: only %d words heard, too few to check", len(words))
+        return False
+    _, vectors = _slide_vectors(session)
+    best = np.max(coverage.embed(texts) @ vectors.T, axis=1)  # each line's closest slide
+    typical = float(np.median(best))
+    log.info("Check me, transcript quality: %d words, typical match with the slides %.2f (need %.2f)", len(words), typical, CLEAR_MATCH)
+    return typical >= CLEAR_MATCH
+
+
 def _relevant_slides(session: dict, text: str) -> list[dict]:
     """The slides most similar to what was said (embeddings, no Gemma)."""
-    if session["id"] not in _slide_vectors:
-        slides = outline.content_slides(session["slides"]) or session["slides"]
-        _slide_vectors[session["id"]] = (slides, coverage.embed([s["text"] for s in slides]))
-    slides, vectors = _slide_vectors[session["id"]]
+    slides, vectors = _slide_vectors(session)
     scores = vectors @ coverage.embed([text])[0]
     best = np.argsort(-scores)[:TOP_SLIDES]
     return [slides[i] for i in sorted(best)]  # back in slide order
@@ -132,6 +165,8 @@ async def run_check(session: dict) -> dict:
     window = " ".join(line["text"].rstrip(". ") if line["text"].endswith("...") else line["text"] for line in lines)
     if len(window.split()) < 5:
         return {"issues": [], "message": "Nothing to check yet. Explain a little first, then press Check me."}
+    if not await asyncio.to_thread(heard_clearly, session, lines):
+        return {"issues": [], "message": UNCLEAR_MESSAGE}
 
     slides = await asyncio.to_thread(_relevant_slides, session, window)
     slides_text = "\n\n".join(

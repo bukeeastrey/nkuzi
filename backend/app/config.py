@@ -38,11 +38,16 @@ OLLAMA_TIMEOUT_S = _env("OLLAMA_TIMEOUT_S", 300)  # CPU is slow; be generous
 OLLAMA_NUM_THREAD = _env("OLLAMA_NUM_THREAD", 0)
 
 # --- Speech to text (faster-whisper, CPU only) ---
-WHISPER_MODEL = _env("WHISPER_MODEL", "tiny.en")  # or "base.en"
-WHISPER_THREADS = _env("WHISPER_THREADS", 4)
+# base.en: on real-voice recordings it was clearly more accurate than tiny.en and
+# took 3.4-5.0 s per 8 s chunk (tiny.en: 1.4-4.1 s; distil-small.en: 10-21 s, too slow).
+WHISPER_MODEL = _env("WHISPER_MODEL", "base.en")  # faster but rougher: "tiny.en"
+# 2 = one per physical core. With 4 (one per hyper-thread) Whisper was 3-4 times
+# SLOWER on this laptop whenever anything else (e.g. antivirus) used the CPU:
+# tiny.en 2.2 s vs 9.6 s per chunk, base.en 3.5 s vs 9.5-25 s.
+WHISPER_THREADS = _env("WHISPER_THREADS", 2)
 # Debugging aid: keep every microphone chunk as a .wav in DEBUG_AUDIO_DIR, so
 # we can listen to exactly what Whisper was given. Leave it off normally.
-SAVE_AUDIO_CHUNKS = _env("SAVE_AUDIO_CHUNKS", True)
+SAVE_AUDIO_CHUNKS = _env("SAVE_AUDIO_CHUNKS", False)
 
 # --- Embeddings (fastembed, ONNX, CPU only) ---
 EMBED_MODEL = _env("EMBED_MODEL", "BAAI/bge-small-en-v1.5")

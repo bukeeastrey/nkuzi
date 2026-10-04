@@ -17,11 +17,22 @@ import { CHUNK_SECONDS } from "../config.js";
 const TRANSCRIPT_LINES = 4; // how many recent lines the transcript panel shows
 const FRESH_MS = 3000; // how long a newly ticked point stays highlighted
 
-// React needs a stable "key" for each row. Saved points use their id;
-// points added in the browser get a temporary key until they are saved.
-let nextTempKey = 1;
+// React needs a different "key" for every row of a list. If two rows ever
+// share a key, React can draw rows twice or leave old ones behind. So keys are
+// made unique here, whatever the ids are.
+let keyCounter = 1;
+function newKey() {
+  return `new-${Date.now().toString(36)}-${keyCounter++}`;
+}
+
 function withKeys(points) {
-  return points.map((p) => ({ ...p, key: p.id || `new-${nextTempKey++}` }));
+  const used = new Set();
+  return points.map((point) => {
+    let key = point.id || newKey();
+    while (used.has(key)) key = newKey(); // never two rows with the same key
+    used.add(key);
+    return { ...point, key };
+  });
 }
 
 // A text box that grows to fit its text, so long points stay readable.
@@ -115,7 +126,7 @@ function EditableOutline({ points, unit, locked, onEdit }) {
         <button
           type="button"
           className="button"
-          onClick={() => onEdit([...points, { key: `new-${nextTempKey++}`, id: null, text: "", slide: null, isNew: true }])}
+          onClick={() => onEdit([...points, { key: newKey(), id: null, text: "", slide: null, isNew: true }])}
         >
           + Add point
         </button>
@@ -139,7 +150,7 @@ function Checklist({ points, slides, unit, covered, fresh, onToggle }) {
   return (
     <div className="checklist">
       {groups.map((group, i) => (
-        <section key={i} className="check-group">
+        <section key={`${group.slide}-${i}`} className="check-group">
           <h2 className="check-heading">
             {group.slide ? `${unit} ${group.slide}` : "Extra points"}
             {titles[group.slide] && <span className="check-heading-title"> · {titles[group.slide]}</span>}
@@ -268,7 +279,7 @@ function Transcript({ lines, micOn }) {
   );
 }
 
-export default function Session({ sessionId, onBack, onEnd }) {
+export default function Session({ sessionId, checkBlocked, onBack, onEnd }) {
   const [session, setSession] = useState(null); // title, slides, unit...
   const [loadError, setLoadError] = useState("");
   const [points, setPoints] = useState([]);
@@ -623,7 +634,14 @@ export default function Session({ sessionId, onBack, onEnd }) {
             >
               What did I miss?
             </button>
-            <button type="button" className="button small" onClick={handleCheck} aria-expanded={showCheck}>
+            <button
+              type="button"
+              className="button small"
+              onClick={handleCheck}
+              aria-expanded={showCheck}
+              disabled={Boolean(checkBlocked)}
+              title={checkBlocked ? `Check me is off: ${checkBlocked}` : ""}
+            >
               {checkStatus === "running" ? "Checking…" : "Check me"}
               {openIssues > 0 && checkStatus !== "running" && <span className="badge">{openIssues}</span>}
             </button>
@@ -632,6 +650,7 @@ export default function Session({ sessionId, onBack, onEnd }) {
             </button>
           </div>
         )}
+        {live && checkBlocked && <div className="listen-hint">Check me is off: {checkBlocked}</div>}
         {live && (
           <div className="progress listen-progress" role="progressbar" aria-label="Points covered" aria-valuenow={coveredPercent} aria-valuemin={0} aria-valuemax={100}>
             <div className="progress-fill" style={{ width: `${coveredPercent}%` }} />

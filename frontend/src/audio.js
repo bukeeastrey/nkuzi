@@ -20,11 +20,11 @@ function explainMicError(error) {
   return `Couldn't start the microphone (${error.message}).`;
 }
 
-// The browser can clean up background noise before we get the audio. It is on
-// by default. Open the page with "?ns=off" in the address to switch it off
-// (useful for comparing transcription quality).
+// The browser can "clean up" background noise before we get the audio. With a
+// real voice on this laptop that made transcription worse (it eats parts of
+// words), so it is OFF by default. Open the page with "?ns=on" to switch it on.
 function wantNoiseSuppression() {
-  return new URLSearchParams(window.location.search).get("ns") !== "off";
+  return new URLSearchParams(window.location.search).get("ns") === "on";
 }
 
 // Start listening.

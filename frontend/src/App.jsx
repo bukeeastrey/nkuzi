@@ -14,21 +14,25 @@ function routeFromHash() {
   return { screen: match[2] ? "recap" : "session", sessionId: match[1] };
 }
 
-// Shows nothing when all is well. When something is broken, says what and how to fix it.
-function ProblemBanner() {
-  const [problems, setProblems] = useState([]);
+const BACKEND_DOWN = { title: "Nkuzi's backend isn't running.", fix: "In the backend folder, run: .\\run.ps1" };
+
+// Asks the backend every 5 seconds whether everything is working.
+// Returns {problems: [{title, fix}], gemmaReady: true/false}.
+function useHealth() {
+  const [health, setHealth] = useState({ problems: [], gemmaReady: true });
 
   useEffect(() => {
     let cancelled = false;
 
     async function check() {
-      let found;
+      let next;
       try {
-        found = (await getHealth()).problems;
+        const data = await getHealth();
+        next = { problems: data.problems, gemmaReady: data.ollama_ok && data.model_present };
       } catch (e) {
-        found = [{ title: "Nkuzi's backend isn't running.", fix: "In the backend folder, run: .\\run.ps1" }];
+        next = { problems: [BACKEND_DOWN], gemmaReady: false };
       }
-      if (!cancelled) setProblems(found);
+      if (!cancelled) setHealth(next);
     }
 
     check();
@@ -40,6 +44,11 @@ function ProblemBanner() {
     };
   }, []);
 
+  return health;
+}
+
+// Shows nothing when all is well. When something is broken, says what and how to fix it.
+function ProblemBanner({ problems }) {
   if (problems.length === 0) return null;
   return (
     <div className="problems" role="alert">
@@ -68,14 +77,23 @@ export default function App() {
   const openRecap = (id) => (window.location.hash = `#/session/${id}/recap`);
   const goHome = () => (window.location.hash = "");
   const { screen, sessionId } = route;
+  const health = useHealth();
+  // "Check me" needs Gemma. When it can't run, the button is disabled and says why.
+  const checkBlocked = health.gemmaReady ? "" : health.problems[0]?.title || "Gemma isn't ready.";
 
   return (
     <div className="app">
-      <ProblemBanner />
+      <ProblemBanner problems={health.problems} />
       <main className="main">
         {screen === "setup" && <Setup onCreated={openSession} />}
         {screen === "session" && (
-          <Session key={sessionId} sessionId={sessionId} onBack={goHome} onEnd={() => openRecap(sessionId)} />
+          <Session
+            key={sessionId}
+            sessionId={sessionId}
+            checkBlocked={checkBlocked}
+            onBack={goHome}
+            onEnd={() => openRecap(sessionId)}
+          />
         )}
         {screen === "recap" && (
           <Recap key={sessionId} sessionId={sessionId} onBackToSession={() => openSession(sessionId)} onNewSession={goHome} />

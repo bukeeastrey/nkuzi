@@ -31,6 +31,7 @@ def main():
     parser.add_argument("folders", nargs="+", type=Path)
     parser.add_argument("--deck", type=Path)
     parser.add_argument("--models", default="tiny.en,base.en,distil-small.en")
+    parser.add_argument("--max-chunks", type=int, default=0, help="only the first N chunks of each folder (0 = all)")
     args = parser.parse_args()
 
     vocab = ""
@@ -43,7 +44,10 @@ def main():
     except httpx.HTTPError:
         print("Ollama is not running")
 
-    recordings = {folder: [read_wav(p) for p in sorted(folder.glob("chunk_*.wav"))] for folder in args.folders}
+    recordings = {}
+    for folder in args.folders:
+        chunks = [read_wav(p) for p in sorted(folder.glob("chunk_*.wav"))]
+        recordings[folder] = chunks[: args.max_chunks] if args.max_chunks else chunks
     for name in args.models.split(","):
         # Swap the model the app's own transcribe code uses, so settings are identical.
         config.WHISPER_MODEL = name
